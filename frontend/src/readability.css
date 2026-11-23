@@ -1,0 +1,17 @@
+/* Higher-contrast text and more readable labels across the full workspace. */
+.nav-caption,.sidebar-help span,.user-details span,.breadcrumb,.breadcrumb b{color:#596584}
+.search-box,.search-box input::placeholder,.eyebrow,.eyebrow>span:last-child,.page-footer{color:#566382}
+.page-heading p{color:#3e4b6e}.heading-secondary,.metric-top,.section-heading p,.workflow-footer,.step-label,.queue-footer,.case-cell small,.detail-eyebrow,.detail-person small,.detail-meta>div>span,.activity-item span:last-child,.evidence-list li{color:#5e6a88}
+.metric-caption,.page-footer,.queue-footer,.filter-select,.filter-select select,.filter-button{color:#5b6784}
+.nav-item{font-size:13px;color:#465371}.nav-caption{font-size:10px}.user-details span,.sidebar-help span{font-size:10px}
+.page-heading h1{font-size:28px}.page-heading p{font-size:12px}.heading-secondary{font-size:11px}
+.metric-top{font-size:11px}.metric-value{font-size:27px}.metric-trend{font-size:9px}.metric-caption{font-size:10px}
+.section-heading h2,.detail-title h2{font-size:13px}.section-heading p{font-size:10px}.step-label{font-size:9px}
+th{font-size:9px;color:#53607e}td{font-size:10px}.case-cell b{font-size:10px}.case-cell small{font-size:9px}.exam-cell{font-size:10px}
+.priority-pill,.status-pill,.stage-value-pill{font-size:9px}.priority-routine{color:#3f5e99}.priority-elevated{color:#8a5b00}.priority-urgent{color:#ad304f}
+.filter-select select,.filter-button{font-size:9px}.queue-footer,.page-footer{font-size:9px}.mock-label{font-size:7px;color:#566382}
+.recommendation-box p,.ai-card p{font-size:10px}.source-link,.reviewer-row b,.reviewer-row span,.detail-person b,.detail-meta b,.evidence-title b,.evidence-list li,.activity-item b{font-size:9px}
+.detail-eyebrow{font-size:8px}.activity-item span:last-child{font-size:8px}
+.status-new{color:#405caa}.status-in-review{color:#5c46ae}.status-needs-info,.status-correction-needed{color:#a95318}.status-ready,.status-accepted{color:#087451}.status-scheduled{color:#2f62a6}.status-in-progress{color:#5040a8}.status-qa-review{color:#85620b}.status-submitted{color:#277282}
+@media(max-width:880px){.page-heading h1{font-size:25px}.step-label{font-size:8px}}
+@media(max-width:680px){.page-heading h1{font-size:23px}.page-heading p{font-size:10px}.heading-secondary{font-size:10px}.metric-top{font-size:10px}.metric-value{font-size:23px}.metric-caption{font-size:9px}.section-heading h2,.detail-title h2{font-size:12px}.section-heading p{font-size:9px}.step-label{font-size:8px}.queue-footer,.page-footer{font-size:8px}}

@@ -1,0 +1,5 @@
+# Ignore all local databases, uploads, and runtime artifacts in backend/data/
+*
+!.gitignore
+.env
+
