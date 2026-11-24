@@ -23,7 +23,7 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - Intake sample files, generated records, processing providers, and workflow decisions belong to the backend. React renders the Intake workspace returned by the API and sends staff intent and user-selected files.
 
 - Keep Intake visually calm and easy to scan. Use a compact queue, one selected-case workspace, and progressive disclosure for documents, exceptions, activity, and uploads. Treat each stage's layout as a separate design review.
-- Keep the Intake case list independently scrollable beneath its search and filters. Keep the ESR dialog within the viewport and reveal manual request fields after the user selects a source file that needs them.
+- Keep the Intake case list independently scrollable beneath its search and filters. Receive requests and add sources inline, without upload modals or directory-input confirmations. Support multi-file selection, ZIPs and dropped folders; retain the inline synthetic-record attestation. Lead case review with the request summary, missing items and next step; distinguish source text from generated summaries.
 
 - Give Intake readiness states a single-line queue badge and a clear case-level label. Keep native selects and file inputs keyboard-accessible within the styled controls. Present Medical Triage as a contention-level queue with evidence and the examination plan in one selected workspace.
 
@@ -33,6 +33,7 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - Put Sign out in the top-bar user account menu and omit the environment badge.
 - Display workflow timestamps in `America/New_York` with the applicable EST or EDT abbreviation.
 - Keep source originals server-side and display document details and cited excerpts in the workspace.
+- In Intake and Medical Triage, lead each evidence review with a short paragraph, key points and known gaps. Keep cited source text available on demand in a keyboard-scrollable reader; long document lists must not push the workflow actions down the page.
 - Use workflow language in the interface and omit environment labels. State unavailable external actions clearly and retain the upload confirmation for claimant records.
 
 - Keep the desktop workflow rail compact and icon-only with stage labels on hover and keyboard focus. Keep the labels visible in the mobile drawer. Show AI features with generic labels and keep provider names, deployment details, and credentials on the backend.

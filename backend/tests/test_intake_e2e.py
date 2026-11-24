@@ -3,8 +3,11 @@ import unittest
 from pathlib import Path
 
 from fastapi import HTTPException
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from app.core.config import BACKEND_ROOT
+from app.core.database import Base
 from app.services.intake_processing import (
     COMMON_LAB_PATTERNS,
     detect_sections,
@@ -26,6 +29,12 @@ class IntakeEndToEndTests(unittest.TestCase):
         self.state = empty_workspace()
         self.test_pdf = BACKEND_ROOT / "test_package" / "03_Combined_PDF" / "Mixed_Medical_Efolder_16_pages.pdf"
         self.assertTrue(self.test_pdf.exists(), f"Synthetic PDF not found at {self.test_pdf}")
+        self.engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+        self.db = self.Session()
+        self.addCleanup(self.db.close)
+        self.addCleanup(self.engine.dispose)
 
     def test_full_intake_to_stage2_workflow(self):
         # 1. New ESR Received from EMS & 2. Load Patient Details & Contentions
@@ -424,11 +433,10 @@ class IntakeEndToEndTests(unittest.TestCase):
         import io
         from starlette.datastructures import UploadFile
         from app.api.intake import receive_exam_management_upload
-        from app.core.database import SessionLocal
         from app.core.security import CurrentUser
         from app.agents.intake.parser import scenario_files, read_bundled_request
 
-        db = SessionLocal()
+        db = self.db
         user = CurrentUser(user_id="test-staff", display_name="Test Staff", role="intake")
 
         scenarios = scenario_files()
@@ -480,10 +488,9 @@ class IntakeEndToEndTests(unittest.TestCase):
         import io
         from starlette.datastructures import UploadFile
         from app.api.intake import create_esr
-        from app.core.database import SessionLocal
         from app.core.security import CurrentUser
 
-        db = SessionLocal()
+        db = self.db
         user = CurrentUser(user_id="test-staff", display_name="Test Staff", role="intake")
 
         # Two files with identical bytes (simulating exact duplicate in a 26-file folder)
@@ -520,6 +527,7 @@ class IntakeEndToEndTests(unittest.TestCase):
         xml_data = b"""<?xml version="1.0" encoding="UTF-8"?>
 <ExamSchedulingRequest synthetic="true" schemaStatus="NotValidatedAgainstVAIEPD">
   <SchedulingRequestUniqueIdentifier>TEST-ESR-015</SchedulingRequestUniqueIdentifier>
+  <SpecialInstructions>Review the attached records before scheduling.</SpecialInstructions>
   <Claim>
     <ProgramTypeCode source="simulation">CPL</ProgramTypeCode>
     <ClaimLabel source="simulation">Disability Compensation</ClaimLabel>
@@ -547,14 +555,15 @@ class IntakeEndToEndTests(unittest.TestCase):
   </Contention>
 </ExamSchedulingRequest>"""
 
-        db = SessionLocal()
+        db = self.db
         user = CurrentUser(user_id="test-staff", display_name="Test Staff", role="intake")
 
         xml_file = UploadFile(filename="ESR_Request.xml", file=io.BytesIO(xml_data))
         pdf_file = UploadFile(filename="SF_600.pdf", file=io.BytesIO(b"%PDF-1.4 sample clinical evidence"))
 
         # 1. Test inspection
-        insp = inspect_esr(file=xml_file, files=[pdf_file], db=db)
+        insp = inspect_esr(file=pdf_file, files=[xml_file], db=db)
+        self.assertTrue(insp["examManagementRequest"])
         self.assertEqual(insp["claimantName"], "Emerson Q Example")
         self.assertEqual(insp["esrReference"], "TEST-ESR-015")
         self.assertEqual(insp["serviceBranch"], "Coast Guard")
@@ -576,7 +585,7 @@ class IntakeEndToEndTests(unittest.TestCase):
         va_inst = view["vaInstructions"]
         self.assertEqual(va_inst["claimantName"], "Emerson Q Example")
         self.assertEqual(va_inst["serviceBranch"], "Coast Guard")
-        self.assertEqual(va_inst["specialInstructions"], "")  # No fake text
+        self.assertEqual(va_inst["specialInstructions"], "Review the attached records before scheduling.")
         self.assertEqual(len(va_inst["contentions"]), 3)
         self.assertIn("Knee and Lower Leg", va_inst["contentions"][0]["dbqs"])
         self.assertTrue(va_inst["isSimulated"])

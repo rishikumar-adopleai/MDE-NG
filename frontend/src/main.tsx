@@ -14,6 +14,7 @@ import './dynamic-workspace.css';
 import './intake.css';
 import './workflow-shell.css';
 import './account.css';
+import './intake-review.css';
 
 const entryHref = canonicalEntryHref(window.location);
 if (entryHref) window.history.replaceState(window.history.state, '', entryHref);

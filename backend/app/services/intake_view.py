@@ -7,6 +7,29 @@ READABLE_DOCUMENT_STATES = {"indexed", "needs-human-review"}
 TRIAGE_ACTIVE_STATES = {"awaiting-review", "in-review", "clarification-required"}
 READABLE_EVIDENCE_BLOCKER = "Attach a readable source document for each contention before validating Intake."
 
+EVIDENCE_CATEGORIES = {
+    "claims-and-applications": "Claims and Applications",
+    "service-treatment": "Service Treatment Records (STR)",
+    "military-personnel": "Military Personnel Records",
+    "va-medical-records": "VA Medical Records",
+    "private-medical-records": "Private Medical Records",
+    "prior-examination": "Previous Examinations & DBQs",
+    "laboratory": "Laboratory Reports",
+    "imaging": "Diagnostic Imaging",
+    "diagnostic-tests": "Diagnostic & Ancillary Tests",
+    "hospital-surgical": "Hospital & Surgical Records",
+    "medication-prescription": "Medication & Prescription Records",
+    "medical-opinions": "Medical Opinions",
+    "health-assessments": "Health Assessments",
+    "authorization-consent": "Authorization & Consent",
+    "lay-witness": "Lay & Witness Statements",
+    "representation": "Representation Documents",
+    "decisions-appeals": "Disability Decisions & Appeals",
+    "insurance-financial": "Insurance & Financial Records",
+    "administrative-correspondence": "Administrative Correspondence",
+    "other": "Other documents",
+}
+
 
 def linked_documents(state: dict, item: dict) -> list[dict]:
     return [
@@ -108,27 +131,29 @@ def with_intake_views(state: dict) -> dict:
 
         # EMS Document Manifest & Receipt Verification
         manifest = esr.get("documentManifest")
-        expected_docs = manifest.get("expectedDocuments", []) if manifest else []
+        expected_docs = (manifest or {}).get("expectedDocuments") or []
+        if (manifest and manifest.get("manifestId") == f"MNF-{esr_id[-8:].upper()}"
+                and manifest.get("source") == "Prime EMS / VBMS eFolder Manifest"
+                and [(item.get("id"), item.get("title")) for item in expected_docs] == [
+                    ("exp-doc-1", "Service Treatment Records (Active Duty)"), ("exp-doc-2", "VA Medical Center Treatment Notes")]):
+            expected_docs = []
         manifest_status = "unverified"
         manifest_summary = "Unverified · No authoritative document manifest attached"
         missing_docs = []
 
-        if manifest:
-            received_titles = [doc.get("title", doc.get("sourceReference", "")).lower() for doc in documents]
-            received_refs = [doc.get("sourceReference", doc.get("title", "")).lower() for doc in documents]
+        if expected_docs:
+            received = {value.strip().casefold() for doc in documents if not doc.get("isExcluded") and doc.get("classificationStatus") != "excluded"
+                        for value in (doc.get("title"), doc.get("id"), doc.get("sourceReference")) if value and value.strip()}
             for exp in expected_docs:
-                exp_title = exp.get("title", "").lower()
-                exp_id = exp.get("id", "").lower()
-                matched = any(exp_title in t or t in exp_title for t in received_titles if t) or any(exp_id in r or r in exp_id for r in received_refs if r)
-                if not matched:
+                if not any(value and value.strip().casefold() in received for value in (exp.get("title"), exp.get("id"), exp.get("sourceReference"))):
                     missing_docs.append(exp)
 
             if missing_docs:
                 manifest_status = "discrepancy"
-                manifest_summary = f"{len(documents)} of {len(expected_docs)} received · {len(missing_docs)} missing"
+                manifest_summary = f"{len(expected_docs) - len(missing_docs)} of {len(expected_docs)} expected documents matched · {len(missing_docs)} missing"
             else:
                 manifest_status = "verified"
-                manifest_summary = f"{len(documents)} of {len(expected_docs)} received · Verified complete"
+                manifest_summary = f"All {len(expected_docs)} expected documents matched"
         else:
             manifest_status = "unverified"
             manifest_summary = f"{len(documents)} received · Manifest unverified"
@@ -250,31 +275,8 @@ def with_intake_views(state: dict) -> dict:
         mismatch_docs = [item["id"] for item in logical_medical_docs if item.get("wrongPatient") or item.get("claimantMatch") == "mismatch"]
         action_required_docs = [item["id"] for item in logical_medical_docs if item.get("actionRequired")]
 
-        CATEGORY_CONFIG = [
-            ("claims-and-applications", "Claims and Applications"),
-            ("service-treatment", "Service Treatment Records (STR)"),
-            ("military-personnel", "Military Personnel Records"),
-            ("va-medical-records", "VA Medical Records"),
-            ("private-medical-records", "Private Medical Records"),
-            ("prior-examination", "Previous Examinations & DBQs"),
-            ("laboratory", "Laboratory Reports"),
-            ("imaging", "Diagnostic Imaging"),
-            ("diagnostic-tests", "Diagnostic & Ancillary Tests"),
-            ("hospital-surgical", "Hospital & Surgical Records"),
-            ("medication-prescription", "Medication & Prescription Records"),
-            ("medical-opinions", "Medical Opinions"),
-            ("health-assessments", "Health Assessments"),
-            ("authorization-consent", "Authorization & Consent"),
-            ("lay-witness", "Lay & Witness Statements"),
-            ("representation", "Representation Documents"),
-            ("decisions-appeals", "Disability Decisions & Appeals"),
-            ("insurance-financial", "Insurance & Financial Records"),
-            ("administrative-correspondence", "Administrative Correspondence"),
-            ("other", "Others"),
-        ]
-
         organizer_categories = []
-        for cat_key, cat_label in CATEGORY_CONFIG:
+        for cat_key, cat_label in EVIDENCE_CATEGORIES.items():
             matching = [
                 item for item in logical_medical_docs
                 if item.get("category") == cat_key or (cat_key == "va-medical-records" and item.get("category") == "hospital")
@@ -322,8 +324,6 @@ def with_intake_views(state: dict) -> dict:
         requested_dbqs = []
         for c in contentions_list:
             requested_dbqs.extend(c.get("requestedDbqNames", []))
-        if not requested_dbqs and contentions_list:
-            requested_dbqs = [c["title"] for c in contentions_list]
 
         is_simulated = esr.get("isSimulated")
         if is_simulated is None:
@@ -365,7 +365,7 @@ def with_intake_views(state: dict) -> dict:
             "progress": round(readable_pages * 100 / page_count) if page_count else 0,
             "manifestStatus": manifest_status,
             "manifestSummary": manifest_summary,
-            "expectedCount": len(expected_docs) if manifest else len(documents),
+            "expectedCount": len(expected_docs) if expected_docs else None,
             "receivedCount": len(documents),
             "missingDocuments": missing_docs,
             "categorizedCounts": dict(cat_counts),

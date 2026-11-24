@@ -213,7 +213,7 @@ def import_exam_request(db: Session, state: dict, request: ExamRequest, original
     now = timestamp()
     esr = add_case(state, request.claimant or "Claimant not provided", [item.title for item in request.contentions], actor, now)
     esr.pop("intakeOrigin", None)
-    esr.update(sourceReference=request.reference, examManagement={
+    esr.update(sourceReference=request.reference, specialInstructions=request.special_instructions, examManagement={
         "esrId": request.reference, "eventId": request.event_id, "sourceEventAt": request.received_at,
         "sourceHash": digest, "program": request.program, "schemaVersion": "4.7",
         "provenance": "exam-management-request",

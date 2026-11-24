@@ -300,17 +300,23 @@ export interface DiagnosticResult extends VersionedEntity {
   reviewedAt?: string;
 }
 
+export type EvidenceCategory = 'service-treatment' | 'va-medical-records' | 'private-medical-records' | 'hospital'
+  | 'laboratory' | 'prior-examination' | 'imaging' | 'va-request' | 'examination-requests' | 'other'
+  | 'claims-and-applications' | 'military-personnel' | 'diagnostic-tests' | 'hospital-surgical'
+  | 'medication-prescription' | 'medical-opinions' | 'health-assessments' | 'authorization-consent'
+  | 'lay-witness' | 'representation' | 'decisions-appeals' | 'insurance-financial' | 'administrative-correspondence';
+
 export interface EvidenceDocument extends VersionedEntity {
   esrId: EntityId;
   title: string;
-  category: 'service-treatment' | 'va-medical-records' | 'private-medical-records' | 'hospital' | 'laboratory' | 'prior-examination' | 'imaging' | 'va-request' | 'other';
+  category: EvidenceCategory;
   sourceReference: string;
   sourceHash?: string;
   administrativeOnly?: boolean;
   pageCount: number;
   classifiedPageCount: number;
   unreadablePageCount: number;
-  classificationStatus: 'queued' | 'processing' | 'indexed' | 'needs-human-review';
+  classificationStatus: 'queued' | 'processing' | 'indexed' | 'needs-human-review' | 'excluded';
   contentionIds: EntityId[];
   syntheticExcerpts?: EvidenceExcerpt[];
   sections?: {
@@ -370,7 +376,7 @@ export interface EvidenceExcerpt {
 export interface IntakeException extends VersionedEntity {
   esrId: EntityId;
   documentId?: EntityId;
-  kind: 'unreadable-pages' | 'possible-duplicate' | 'missing-document' | 'metadata-incomplete';
+  kind: 'unreadable-pages' | 'duplicate-document' | 'possible-duplicate' | 'missing-document' | 'metadata-incomplete';
   title: string;
   detail: string;
   sourceReference?: string;
@@ -588,7 +594,7 @@ export interface LogicalDocument {
   parentDocumentId: EntityId;
   sectionId: string;
   title: string;
-  category: 'service-treatment' | 'va-medical-records' | 'private-medical-records' | 'hospital' | 'laboratory' | 'prior-examination' | 'imaging' | 'va-request' | 'other';
+  category: EvidenceCategory;
   startPage: number;
   endPage: number;
   pageCount: number;
@@ -670,7 +676,7 @@ export interface IntakeWorkspaceView {
     progress: number;
     manifestStatus?: 'verified' | 'unverified' | 'discrepancy';
     manifestSummary?: string;
-    expectedCount?: number;
+    expectedCount?: number | null;
     receivedCount?: number;
     missingDocuments?: { id: string; title: string; expectedCategory: string; required?: boolean }[];
     categorizedCounts?: Record<string, number>;
@@ -713,6 +719,8 @@ export interface EsrInspectionResult {
   specialInstructions: string;
   fileType: string;
   fileSize: number;
+  fileCount?: number;
+  examManagementRequest?: boolean;
   pageCount?: number;
   isDuplicate: boolean;
   existingEsrId?: string | null;

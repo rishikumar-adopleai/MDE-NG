@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { buildEvidenceBrief } from '../src/stages/evidenceBriefModel.ts';
 import { createSeedWorkspace } from '../src/data/initialization/seedWorkspace.ts';
 import { getCaseMetrics } from '../src/domain/selectors.ts';
 import {
@@ -10,6 +11,45 @@ import {
 } from '../src/services/workflowService.ts';
 
 const seed = () => createSeedWorkspace();
+const evidence = {title:'EOB.pdf', category:'insurance-financial', classificationStatus:'indexed', pageCount:2, unreadablePageCount:0};
+
+test('document summary preserves clinical qualifiers, decimals, and all remaining points', () => {
+  const sentences = ['This is not a bill.', 'Two entries are marked paid.', 'The listed amount is $25.00.', 'Dr. Green found no evidence of injury.', 'Remark code PDC is listed.'];
+  const brief = buildEvidenceBrief({...evidence, processing:{provider:'ai', summary:sentences.join(' '), sources:[{page:2,text:'Original page'}]}});
+  assert.deepEqual([brief.paragraph, ...brief.points, ...brief.more], sentences);
+  assert.deepEqual(brief.sources, [{page:2,text:'Original page'}]);
+});
+
+test('local form labels are not a narrative and keyed facts retain their page', () => {
+  const raw = 'Name Sex Provider Plan Claim Status Service Paid Due Forms '.repeat(10);
+  const sources = [{page:1,text:raw}, {page:2,text:'This is not a bill\nRemark code: PDC'}];
+  const brief = buildEvidenceBrief({...evidence, processing:{provider:'local', summary:raw, sources}});
+  assert.match(brief.paragraph, /insurer/);
+  assert.deepEqual(brief.points, ['“This is not a bill” (p. 2)', '“Remark code: PDC” (p. 2)']);
+  assert.deepEqual(brief.sources, sources);
+  assert.equal(brief.generated,false);
+});
+
+test('pending, empty and unreadable records are distinguished', () => {
+  const unreadable = buildEvidenceBrief({...evidence, unreadablePageCount:1, classificationStatus:'needs-human-review'});
+  assert.match(unreadable.issues.join(' '), /1 page could not be read/);
+  assert.match(unreadable.issues.join(' '), /No source excerpt/);
+  const pending = buildEvidenceBrief({...evidence,classificationStatus:'queued',processing:{provider:'ai',summary:'Old result'}});
+  assert.match(pending.paragraph, /awaiting processing/);
+  assert.deepEqual(pending.issues, []);
+});
+
+test('section and contention reviews do not borrow another report or contention’s excerpts', () => {
+  const parent = {...evidence, sections:[{title:'A'},{title:'B'}],processing:{provider:'ai',summary:'Whole file.',sources:[{page:1,text:'First'},{page:2,text:'Second'}]}};
+  const section = {...evidence,sectionId:'B',title:'Second report',startPage:2,endPage:2,summary:'Only the second report.'};
+  const brief = buildEvidenceBrief(section,parent);
+  assert.equal(brief.paragraph,section.summary);
+  assert.deepEqual(brief.sources,[{page:2,text:'Second'}]);
+  const doc = {...parent,syntheticExcerpts:[{contentionId:'other',pageNumber:1,text:'Other contention'}]};
+  assert.deepEqual(buildEvidenceBrief(doc, undefined,'current').sources,[]);
+  assert.match(buildEvidenceBrief(doc, undefined,'current').paragraph,/No excerpt is linked/);
+  assert.deepEqual(buildEvidenceBrief(doc, undefined,'other').sources,[{page:1,text:'Other contention'}]);
+});
 const valuesFor = (dbq) => dbq.formType.toLowerCase().includes('opinion')
   ? { ...dbq.values, opinionQuestion: 'Is the condition related to the documented service history?', rationale: 'Revised clinician-authored rationale with the reviewed source references.' }
   : { ...dbq.values, history: 'History reviewed and updated.', findings: 'Clinician findings recorded.', rationale: 'Revised clinician-authored rationale with the reviewed source references.' };

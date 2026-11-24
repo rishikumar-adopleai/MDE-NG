@@ -180,34 +180,35 @@ def extract_metadata_from_extracted_files(extracted: list[tuple[str, bytes]]) ->
     )
 
     # 1. First check for XML
-    xml_item = next(((fn, ct) for fn, ct in extracted if fn.lower().endswith(".xml")), None)
+    xml_items = [(fn, ct) for fn, ct in extracted if fn.lower().endswith(".xml")]
+    if len(xml_items) > 1:
+        raise HTTPException(422, "Choose one exam request XML per case. Attach additional XML documents separately.")
+    xml_item = next(iter(xml_items), None)
     if xml_item:
-        try:
-            parsed = parse_exam_request(xml_item[1])
-            xml_lower = xml_item[1].lower()
-            is_sim_xml = (
-                is_simulated_payload
-                or "syn" in (parsed.reference or "").lower()
-                or "test" in (parsed.reference or "").lower()
-                or "example" in (parsed.claimant or "").lower()
-                or b'synthetic="true"' in xml_lower
-                or b'source="simulation"' in xml_lower
-                or b'notvalidatedagainstvaiepd' in xml_lower
-            )
-            return {
-                "claimantName": parsed.claimant or "",
-                "esrReference": parsed.reference or "",
-                "serviceBranch": parsed.service_group or "",
-                "benefitProgram": parsed.program or "Compensation & Pension (C&P Live)",
-                "city": parsed.city or "",
-                "stateCode": parsed.state_code or "",
-                "contentions": [{"title": c.title, "classification": c.classification or "Direct Service Connection", "forms": list(c.requested_forms)} for c in parsed.contentions],
-                "specialInstructions": parsed.special_instructions or "",
-                "fileType": f"Folder / Package ({len(extracted)} files including XML)",
-                "isSimulated": is_sim_xml,
-            }
-        except Exception:
-            pass
+        parsed = parse_exam_request(xml_item[1])
+        xml_lower = xml_item[1].lower()
+        is_sim_xml = (
+            is_simulated_payload
+            or "syn" in (parsed.reference or "").lower()
+            or "test" in (parsed.reference or "").lower()
+            or "example" in (parsed.claimant or "").lower()
+            or b'synthetic="true"' in xml_lower
+            or b'source="simulation"' in xml_lower
+            or b'notvalidatedagainstvaiepd' in xml_lower
+        )
+        return {
+            "claimantName": parsed.claimant or "",
+            "esrReference": parsed.reference or "",
+            "serviceBranch": parsed.service_group or "",
+            "benefitProgram": parsed.program or "Compensation & Pension (C&P Live)",
+            "city": parsed.city or "",
+            "stateCode": parsed.state_code or "",
+            "contentions": [{"title": c.title, "classification": c.classification or "Direct Service Connection", "forms": list(c.requested_forms)} for c in parsed.contentions],
+            "specialInstructions": parsed.special_instructions or "",
+            "fileType": f"Folder / Package ({len(extracted)} files including XML)",
+            "examManagementRequest": True,
+            "isSimulated": is_sim_xml,
+        }
 
     # 2. Extract text from up to the first 6 PDFs or text files
     all_text_blocks = []
@@ -416,6 +417,7 @@ def inspect_esr(
         "contentions": metadata["contentions"],
         "specialInstructions": metadata["specialInstructions"],
         "fileType": metadata["fileType"],
+        "examManagementRequest": metadata.get("examManagementRequest", False),
         "fileSize": total_size,
         "fileCount": len(extracted),
         "pageCount": metadata.get("total_pages") or len(extracted),

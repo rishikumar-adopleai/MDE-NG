@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Activity, AlertCircle, ArrowRight, Check, CheckCircle2, ChevronDown,
-  ChevronRight, FileText, FlaskConical, Folder, Inbox, Layers, Plus, RefreshCw, Search, ShieldAlert, ShieldCheck, Trash2, X,
+  ChevronRight, FileText, Inbox, Plus, RefreshCw, Search, Trash2, X,
 } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';
 import type { EvidenceDocument, IntakeStatus, LogicalDocument } from '../domain/model';
 import { CasePanel, Status } from './shared';
 import { DocumentReviewAssistant } from './DocumentReviewAssistant';
 import { StageHeading } from './StageHeading';
+import { IntakeBrief } from './IntakeBrief';
 import { IntakeImport } from './IntakeImport';
+import { EvidenceBrief, buildEvidenceBrief } from './EvidenceBrief';
 import { caseStateTone, dateLabel, documentName, formatActivityLabel, formatCategory, formatStatus, formatWorkspaceCopy, practiceCaseLabel, toCaseItem } from './presentation';
 
 type IntakeFilter = 'all' | IntakeStatus;
@@ -38,93 +40,42 @@ const sections: { key: CaseSection; label: string; icon: typeof FileText }[] = [
   { key: 'activity', label: 'Activity', icon: Activity },
 ];
 
-function ImportDialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
-  const dialog = useRef<HTMLDialogElement>(null);
-
-  useEffect(() => {
-    const element = dialog.current;
-    element?.showModal();
-    return () => element?.close();
-  }, []);
-
-  return <dialog className="intake-dialog" ref={dialog} aria-labelledby="intake-dialog-title"
-    onCancel={event => { event.preventDefault(); onClose(); }}>
-    <div className="intake-dialog-heading">
-      <h2 id="intake-dialog-title">{title}</h2>
-      <button type="button" className="intake-icon-button" aria-label="Close import" onClick={onClose}><X size={19} /></button>
-    </div>
-    {children}
-  </dialog>;
-}
-
-const CATEGORY_OPTIONS = [
-  { value: 'service-treatment', label: 'Service Treatment Records' },
-  { value: 'va-medical-records', label: 'VA Medical Records' },
-  { value: 'private-medical-records', label: 'Private Medical Records' },
-  { value: 'laboratory', label: 'Lab Reports' },
-  { value: 'imaging', label: 'Diagnostic Imaging' },
-  { value: 'prior-examination', label: 'Previous DBQs' },
-  { value: 'other', label: 'Other Documents' },
-];
-
-function SourceRow({ document, onRetry, onReclassify, busy, isDuplicate }: {
+function SourceRow({ document, parent, categories, onRetry, onReclassify, busy, isDuplicate }: {
   document: LogicalDocument | EvidenceDocument;
+  parent?: EvidenceDocument;
+  categories: {key: string; label: string}[];
   onRetry?: () => void;
   onReclassify?: (category: string) => void;
   busy: boolean;
   isDuplicate?: boolean;
 }) {
-  const result = 'processing' in document ? document.processing : undefined;
   const isLogical = 'sectionId' in document;
-  const indexed = document.classificationStatus === 'indexed';
+  const source = isLogical ? parent : document;
+  const result = source?.processing;
+  const pending = source?.classificationStatus === 'queued' || source?.classificationStatus === 'processing';
+  const indexed = !pending && document.classificationStatus === 'indexed';
   const review = document.classificationStatus === 'needs-human-review';
-  const ai = result?.provider === 'ai';
-  const excerpts = result?.sources?.length ? result.sources : Array.from(new Map(
-    ('syntheticExcerpts' in document ? document.syntheticExcerpts : undefined)?.map(source => [source.pageNumber, { page: source.pageNumber, text: source.text }]) ?? [],
-  ).values());
-  const summary = isLogical ? document.summary : result?.summary;
-  const showSummary = Boolean(summary);
-  const quality = 'quality' in document ? document.quality : undefined;
-  const sections = 'sections' in document ? document.sections : undefined;
-  const formatRaw = (quality?.format || document.sourceReference.split('.').pop() || 'PDF').toUpperCase();
-  const formatBadgeClass = formatRaw.includes('XML') ? 'xml' : ['PNG', 'JPG', 'JPEG', 'TIFF', 'BMP'].includes(formatRaw) ? 'image' : 'pdf';
+  const brief = buildEvidenceBrief(document, parent);
+  const quality = source?.quality;
+  const sections = isLogical ? undefined : source?.sections;
+  const filename = isLogical ? document.parentFileName : document.sourceReference;
+  const formatRaw = Array.from(filename.matchAll(/\.(pdf|xml|txt|png|jpe?g|tiff?|bmp|zip)(?=$|[\s(·])/gi)).at(-1)?.[1].toUpperCase() ?? 'FILE';
+  const category = document.category === 'hospital' ? 'va-medical-records' : document.category;
+  const categoryLabel = categories.find(item => item.key === category)?.label ?? formatCategory(category);
   const ocrApplied = isLogical ? document.ocrApplied : quality?.ocrApplied;
-  const ocrConfidence = isLogical ? document.ocrConfidence : quality?.ocrConfidence;
   const wrongPatient = isLogical ? document.wrongPatient : quality?.claimantMatch === 'mismatch';
-  const readabilityScore = isLogical ? document.readabilityScore : quality?.readabilityScore;
+  const readabilityScore = !pending && quality ? (isLogical ? document.readabilityScore : quality.readabilityScore) : undefined;
   const actionRequired = isLogical ? document.actionRequired : review;
 
   return <li className={`intake-source${actionRequired ? ' is-action-required' : ''}`}>
     <span className="intake-source-icon"><FileText size={19} aria-hidden="true" /></span>
     <div className="intake-source-content">
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-        <span className={`intake-format-badge ${formatBadgeClass}`}>{formatRaw}</span>
-        <b>{documentName(document.title)}</b>
-
-        {!document.administrativeOnly && onReclassify ? (
-          <select
-            className="intake-category-select"
-            value={document.category === 'hospital' ? 'va-medical-records' : document.category}
-            onChange={e => onReclassify(e.target.value)}
-            disabled={busy}
-            title="Review or correct document classification"
-          >
-            {CATEGORY_OPTIONS.map(opt => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-        ) : (
-          <span className="intake-source-tag">{formatCategory(document.category)}</span>
-        )}
-
-        {actionRequired && (
-          <span className="intake-issue-pill" style={{ background: '#fef2f2', color: '#b91c1c', borderColor: '#fca5a5', fontWeight: 600 }}>
-            Action Required
-          </span>
-        )}
+      <div className="intake-document-title">
+        <span className="intake-file-type">{formatRaw}</span><b>{documentName(brief.title)}</b>
+        <span className="intake-source-tag">{categoryLabel}</span>
         {ocrApplied && (
           <span className="intake-ocr-badge" title="Optical Character Recognition performed on scanned pages">
-            OCR Applied ({ocrConfidence ?? 95}%)
+            OCR used
           </span>
         )}
         {(isDuplicate || (isLogical && document.isDuplicate)) && (
@@ -143,7 +94,7 @@ function SourceRow({ document, onRetry, onReclassify, busy, isDuplicate }: {
           <>
             <strong style={{ color: '#0f172a' }}>{document.parentFileName}</strong>
             {' · '}
-            <span>pp. {document.startPage}–{document.endPage} ({document.pageCount} {document.pageCount === 1 ? 'page' : 'pages'})</span>
+            <span>{document.pageCount ? (document.startPage === document.endPage ? `p. ${document.startPage}` : `pp. ${document.startPage}–${document.endPage}`) : 'Page count pending'}</span>
             {readabilityScore !== undefined && ` · ${readabilityScore}% readable`}
           </>
         ) : (
@@ -157,7 +108,10 @@ function SourceRow({ document, onRetry, onReclassify, busy, isDuplicate }: {
         )}
       </p>
 
-      {sections && sections.length > 1 && (
+      <details className="intake-excerpts">
+        <summary><ChevronRight size={15} aria-hidden="true" /> Review summary</summary>
+        <EvidenceBrief brief={brief} sourceName={filename} administrative={source?.category === 'va-request' && source.administrativeOnly} />
+        {sections && sections.length > 1 && (
         <div style={{ marginTop: '8px' }}>
           <small style={{ fontWeight: 600, color: 'var(--intake-muted)', display: 'block', marginBottom: '3px' }}>
             Multi-Report Boundary Split ({sections.length} logical reports detected):
@@ -172,33 +126,15 @@ function SourceRow({ document, onRetry, onReclassify, busy, isDuplicate }: {
         </div>
       )}
 
-      <details className="intake-excerpts">
-        <summary><ChevronRight size={15} aria-hidden="true" /> Report excerpts & extracted data</summary>
+        {!document.administrativeOnly && onReclassify && <label className="intake-correct-category">Document category
+          <select aria-label={`Category for ${document.title}`} value={category} disabled={busy || pending} onChange={event => onReclassify(event.target.value)}>
+            {!categories.some(item => item.key === category) && <option value={category}>{categoryLabel}</option>}
+            {categories.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}
+          </select></label>}
         {result?.error && <p className="intake-source-error">{formatWorkspaceCopy(result.error)}</p>}
-        {result?.aiUnavailable && <p>Document checks completed. AI summary unavailable.</p>}
-
-        {isLogical && document.issues && document.issues.length > 0 && (
-          <div style={{ background: '#fff1f2', border: '1px solid #fecdd3', padding: '8px 10px', borderRadius: '6px', margin: '8px 0', fontSize: '12px', color: '#9f1239' }}>
-            <b>Intake Issues Identified:</b>
-            <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
-              {document.issues.map((iss, idx) => <li key={idx}>{iss}</li>)}
-            </ul>
-          </div>
-        )}
-
-        {showSummary && <div className="intake-document-summary">
-          <b>{ai ? 'AI summary' : 'Clinical summary'}</b>
-          <p>{summary}</p>
-        </div>}
-
-        {excerpts.map(source => <blockquote key={source.page}><b>Page {source.page}</b><p>{source.text}</p></blockquote>)}
-
         {document.extractedData?.labPanels && document.extractedData.labPanels.length > 0 && (
-          <div className="intake-lab-findings">
-            <div className="intake-lab-header">
-              <FlaskConical size={16} />
-              <span>Extracted Clinical Laboratory Findings ({document.extractedData.labPanels.length} {document.extractedData.labPanels.length === 1 ? 'panel' : 'panels'})</span>
-            </div>
+          <details className="evidence-disclosure"><summary><ChevronRight size={15} aria-hidden="true" />Laboratory results ({document.extractedData.labPanels.length} {document.extractedData.labPanels.length === 1 ? 'panel' : 'panels'})</summary>
+            <div className="intake-lab-findings evidence-reader" role="region" tabIndex={0} aria-label={`Laboratory results for ${brief.title}`}>
             {document.extractedData.labPanels.map((panel, idx) => (
               <div key={idx} className="intake-lab-panel">
                 <div className="intake-lab-panel-title">
@@ -233,7 +169,8 @@ function SourceRow({ document, onRetry, onReclassify, busy, isDuplicate }: {
                 </table>
               </div>
             ))}
-          </div>
+            </div>
+          </details>
         )}
       </details>
       {result?.retryable && onRetry && <button type="button" className="intake-text-action" disabled={busy} onClick={onRetry}><RefreshCw size={15} /> {result.aiUnavailable ? 'Retry AI summary' : 'Retry document'}</button>}
@@ -254,7 +191,7 @@ export function IntakePage(props: IntakeProps) {
     completeDocumentProcessing, updateDocumentCategory, validateIntake } = useWorkspace();
   const [section, setSection] = useState<CaseSection>('documents');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
-  const [expandedInstructions, setExpandedInstructions] = useState(false);
+  const importOpener = useRef('intake-new-request');
   const [mobileQueueOpen, setMobileQueueOpen] = useState(false);
   const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
   const [importTarget, setImportTarget] = useState<{ type: 'esr' } | { type: 'source'; esrId: string }>();
@@ -285,64 +222,36 @@ export function IntakePage(props: IntakeProps) {
   const receiptReference = receiptReferences[selectedId] ?? '';
 
   // Separate clinical evidence documents from administrative request metadata
-  const medicalDocuments = documents.filter(d => !d.administrativeOnly && d.category !== 'va-request');
-  const metadataDocuments = documents.filter(d => d.administrativeOnly || d.category === 'va-request');
+  const activeDocuments = documents.filter(doc => doc.classificationStatus !== 'excluded');
+  const isMetadata = (doc: EvidenceDocument) => doc.administrativeOnly || ['va-request', 'examination-requests'].includes(doc.category);
+  const medicalDocuments = activeDocuments.filter(doc => !isMetadata(doc));
+  const metadataDocuments = activeDocuments.filter(isMetadata);
 
   const organizer = view?.aiOrganizer;
-  const logicalMedicalDocs = organizer?.logicalDocuments ?? [];
   const logicalMetadataDocs = organizer?.logicalMetadataDocuments ?? [];
 
   // When logical document segmentation is available, make it the primary organization unit
-  const medicalItems = logicalMedicalDocs.length > 0 ? logicalMedicalDocs : medicalDocuments;
+  const medicalItems: (LogicalDocument | EvidenceDocument)[] = organizer?.logicalDocuments ?? medicalDocuments;
 
   const duplicateDocIds = new Set(organizer?.duplicateDocumentIds ?? []);
 
-  const ALL_CATEGORY_CONFIG = [
-    { key: 'claims-and-applications', label: 'Claims and Applications' },
-    { key: 'service-treatment', label: 'Service Treatment Records (STR)' },
-    { key: 'military-personnel', label: 'Military Personnel Records' },
-    { key: 'va-medical-records', label: 'VA Medical Records' },
-    { key: 'private-medical-records', label: 'Private Medical Records' },
-    { key: 'prior-examination', label: 'Previous Examinations & DBQs' },
-    { key: 'laboratory', label: 'Laboratory Reports' },
-    { key: 'imaging', label: 'Diagnostic Imaging' },
-    { key: 'diagnostic-tests', label: 'Diagnostic & Ancillary Tests' },
-    { key: 'hospital-surgical', label: 'Hospital & Surgical Records' },
-    { key: 'medication-prescription', label: 'Medication & Prescription Records' },
-    { key: 'medical-opinions', label: 'Medical Opinions' },
-    { key: 'health-assessments', label: 'Health Assessments' },
-    { key: 'authorization-consent', label: 'Authorization & Consent' },
-    { key: 'lay-witness', label: 'Lay & Witness Statements' },
-    { key: 'representation', label: 'Representation Documents' },
-    { key: 'decisions-appeals', label: 'Disability Decisions & Appeals' },
-    { key: 'insurance-financial', label: 'Insurance & Financial Records' },
-    { key: 'administrative-correspondence', label: 'Administrative Correspondence' },
-    { key: 'other', label: 'Others' },
-  ];
-
-  const categoryFolders = [
-    {
-      key: 'all',
-      label: 'All Medical Evidence',
-      docCount: medicalItems.length,
-      pageCount: medicalItems.reduce((sum, d) => sum + (d.pageCount || 0), 0),
-    },
-    ...ALL_CATEGORY_CONFIG.map(cfg => {
-      const matching = medicalItems.filter(d => d.category === cfg.key || (cfg.key === 'va-medical-records' && d.category === 'hospital'));
-      return {
-        key: cfg.key,
-        label: cfg.label,
-        docCount: matching.length,
-        pageCount: matching.reduce((sum, d) => sum + (d.pageCount || 0), 0),
-      };
-    })
-  ].filter(item => item.key === 'all' || item.docCount > 0);
-
-  const filteredMedicalDocuments = selectedCategory === 'all'
-    ? medicalItems
-    : selectedCategory === 'va-medical-records'
-      ? medicalItems.filter(d => d.category === 'va-medical-records' || d.category === 'hospital')
-      : medicalItems.filter(d => d.category === selectedCategory);
+  const categories = organizer?.categories ?? Array.from(new Set(medicalDocuments.map(doc => doc.category))).map(key => ({key, label: formatCategory(key)}));
+  const categoryOf = (doc: LogicalDocument | EvidenceDocument) => doc.category === 'hospital' ? 'va-medical-records' : doc.category;
+  const categoryFolders = Array.from(new Set(medicalItems.map(categoryOf))).map(key => ({key,
+    label: categories.find(item => item.key === key)?.label ?? formatCategory(key), count: medicalItems.filter(item => categoryOf(item) === key).length,
+  }));
+  const currentCategory = categoryFolders.some(item => item.key === selectedCategory) ? selectedCategory : 'all';
+  const filteredMedicalDocuments = medicalItems.filter(item => currentCategory === 'all' || currentCategory === categoryOf(item));
+  const openImport = (opener: HTMLButtonElement, target: NonNullable<typeof importTarget>) => {
+    importOpener.current = opener.id;
+    setImportTarget(target);
+  };
+  function closeImport() {
+    setImportTarget(undefined);
+    requestAnimationFrame(() => {
+      (window.document.getElementById(importOpener.current) ?? caseHeading.current)?.focus();
+    });
+  }
 
   async function run(promise: Promise<{ ok: boolean; message: string }>, after?: () => void) {
     setProcessing(true);
@@ -367,6 +276,8 @@ export function IntakePage(props: IntakeProps) {
 
   function imported(id: string) {
     setImportTarget(undefined);
+    setSelectedCategory('all');
+    requestAnimationFrame(() => caseHeading.current?.focus());
     if (importTarget?.type === 'source') {
       notify('Source document queued.');
     } else {
@@ -378,17 +289,17 @@ export function IntakePage(props: IntakeProps) {
 
   return <div className="intake-page">
     <StageHeading stage="Intake" description="Receive exam requests and review source documents before triage.">
-      <button type="button" className="intake-primary" onClick={() => setImportTarget({ type: 'esr' })}><Plus size={19} /> New ESR</button>
+      {!importTarget && <button type="button" id="intake-new-request" className="intake-primary intake-new-esr" onClick={event => openImport(event.currentTarget, { type: 'esr' })}><Plus size={19} /> New ESR</button>}
     </StageHeading>
 
-    <div className={`intake-board${!selected ? ' intake-board-empty' : ''}`}>
+    {importTarget ? <IntakeImport esrId={importTarget.type === 'source' ? importTarget.esrId : undefined} onReceived={imported} onCancel={closeImport} /> : <div className={`intake-board${!selected ? ' intake-board-empty' : ''}`}>
       <aside className="intake-queue-card" aria-label="Intake queue">
         <button type="button" className="intake-queue-toggle" aria-expanded={mobileQueueOpen || !selected}
           aria-controls="intake-queue-controls" disabled={!selected} onClick={() => setMobileQueueOpen(value => !value)}>
-          <Inbox size={18} /><span>Intake queue</span><small>{esrs.length} cases</small><ChevronDown size={17} />
+          <Inbox size={18} /><span>Intake queue</span><small>{esrs.length} {esrs.length === 1 ? 'case' : 'cases'}</small><ChevronDown size={17} />
         </button>
         <div id="intake-queue-controls" className={`intake-queue-controls${mobileQueueOpen || !selected ? ' is-open' : ''}`}>
-          <header className="intake-queue-heading"><h2>Intake queue</h2><span>{esrs.length} cases</span></header>
+          <header className="intake-queue-heading"><h2>Intake queue</h2><span>{esrs.length} {esrs.length === 1 ? 'case' : 'cases'}</span></header>
           <div className="intake-queue-toolbar">
             <label className="intake-search"><Search size={17} aria-hidden="true" /><input value={query}
               aria-label="Search Intake cases" placeholder="Search ESR or claimant"
@@ -420,8 +331,8 @@ export function IntakePage(props: IntakeProps) {
                 <span className="intake-queue-status" title={label}><Status text={badge} tone={issueCount || facts?.needsReadableEvidence ? 'amber' : caseStateTone(label)} /></span>
               </button></li>;
             })}
-          </ul> : <div className="intake-queue-empty" role="status"><p>No cases match these filters.</p>
-            <button type="button" className="intake-text-action" onClick={() => { onQueryChange(''); onFilterChange('all'); onIntakeStatus('all'); }}>Reset filters</button>
+          </ul> : <div className="intake-queue-empty" role="status"><p>{query || activeFilter !== 'all' || intakeStatus !== 'all' ? 'No cases match these filters.' : 'No requests in Intake yet.'}</p>
+            <button type="button" hidden={!query && activeFilter === 'all' && intakeStatus === 'all'} className="intake-text-action" onClick={() => { onQueryChange(''); onFilterChange('all'); onIntakeStatus('all'); }}>Reset filters</button>
           </div>}
         </div>
       </aside>
@@ -448,235 +359,43 @@ export function IntakePage(props: IntakeProps) {
           })}</ol>
         </div>
 
-        {/* Dedicated VA Examination Request Section for this particular patient */}
-        <div className="va-instructions-panel" role="region" aria-label="VA Examination Request">
-          <div className="va-instructions-header">
-            <div className="va-instructions-title">
-              <ShieldCheck size={18} className="va-instructions-icon" aria-hidden="true" />
-              <h4>VA Examination Request</h4>
-            </div>
-            <div className="va-instructions-simulation-badge">
-              {view.vaInstructions?.isSimulated ? (
-                <span className="va-sim-badge simulated" title="Simulated test request · Not connected to live VA exchange">
-                  SIMULATED REQUEST
-                </span>
-              ) : (
-                <span className="va-sim-badge live" title="Official live VA examination directive">
-                  OFFICIAL LIVE VA REQUEST
-                </span>
-              )}
-            </div>
-          </div>
-
-          <div className="va-instructions-grid">
-            <div className="va-grid-row">
-              <span className="va-grid-label">{view.vaInstructions?.contentions && view.vaInstructions.contentions.length > 1 ? 'Contentions' : 'Contention'}</span>
-              <span className="va-grid-value">
-                {view.vaInstructions?.contentions && view.vaInstructions.contentions.length > 0
-                  ? view.vaInstructions.contentions.map(c => c.title).join(', ')
-                  : 'Not specified'}
-              </span>
-            </div>
-            <div className="va-grid-row">
-              <span className="va-grid-label">Service branch</span>
-              <span className="va-grid-value">
-                {view.vaInstructions?.serviceBranch || 'Not specified'}
-              </span>
-            </div>
-            <div className="va-grid-row">
-              <span className="va-grid-label">Priority</span>
-              <span className="va-grid-value">
-                {view.vaInstructions?.priorityHandling
-                  ? view.vaInstructions.priorityHandling.charAt(0).toUpperCase() + view.vaInstructions.priorityHandling.slice(1).toLowerCase()
-                  : 'Routine'}
-              </span>
-            </div>
-            <div className="va-grid-row">
-              <span className="va-grid-label">
-                {(view.vaInstructions?.requestedDbqs && view.vaInstructions.requestedDbqs.length > 1) || (view.vaInstructions?.contentions && view.vaInstructions.contentions.some(c => c.dbqs && c.dbqs.length > 1)) ? 'Requested DBQs' : 'Requested DBQ'}
-              </span>
-              <span className="va-grid-value">
-                {(() => {
-                  const allDbqs = Array.from(new Set([
-                    ...(view.vaInstructions?.requestedDbqs || []),
-                    ...(view.vaInstructions?.contentions?.flatMap(c => c.dbqs || []) || [])
-                  ])).filter(Boolean);
-                  return allDbqs.length > 0 ? allDbqs.join(', ') : 'DBQ worksheet to be determined';
-                })()}
-              </span>
-            </div>
-          </div>
-
-          {/* Additional instructions: Displayed ONLY when available */}
-          {view.vaInstructions?.specialInstructions ? (
-            <>
-              <div className={`va-instructions-text-container ${expandedInstructions ? 'expanded' : 'collapsed'}`}>
-                <div className="va-instructions-raw-text">
-                  {view.vaInstructions.specialInstructions}
-                </div>
-              </div>
-              <div className="va-instructions-footer">
-                <span className="va-instructions-mode-label">
-                  Original request · Read-only
-                </span>
-                <button
-                  type="button"
-                  className="va-instructions-toggle-btn"
-                  onClick={() => setExpandedInstructions(!expandedInstructions)}
-                >
-                  {expandedInstructions ? 'Collapse instructions ⌃' : 'View full instructions ⌵'}
-                </button>
-              </div>
-            </>
-          ) : (
-            <div className="va-instructions-footer">
-              <span className="va-instructions-mode-label">
-                Original request · Read-only · No additional instructions specified
-              </span>
-            </div>
-          )}
-        </div>
+        <IntakeBrief key={selected.id} view={view} onExceptions={() => setSection('exceptions')} />
 
         <div className="intake-sections" role="group" aria-label="Case sections">
           {sections.map(({ key, label, icon: Icon }) => <button type="button" key={key} aria-pressed={section === key} onClick={() => setSection(key)}>
             <Icon size={16} aria-hidden="true" />{label}
             {key === 'documents' && <span>{documents.length}</span>}
-            {key === 'exceptions' && view.openExceptions > 0 && <span className="intake-alert-count">{view.openExceptions}</span>}
+            {key === 'exceptions' && view.openExceptions + view.escalatedExceptions > 0 && <span className="intake-alert-count">{view.openExceptions + view.escalatedExceptions}</span>}
           </button>)}
         </div>
 
         <div className="intake-case-content">
           <div hidden={section !== 'documents'}>
-            {/* AI Document Organizer Dashboard */}
-            <div className="intake-organizer-card">
-              <div className="intake-organizer-header">
-                <div className="intake-organizer-title">
-                  <span className="intake-source-icon" style={{ background: '#e9f2ef', color: '#16584d' }}>
-                    <Layers size={20} aria-hidden="true" />
-                  </span>
-                  <div>
-                    <h4>AI Document Organizer</h4>
-                    <p>Automated multi-format extraction, logical section splitting, and clinical categorization</p>
-                  </div>
-                </div>
-                <Status 
-                  text={
-                    view.aiOrganizer?.corruptedCount || view.aiOrganizer?.mismatchCount
-                      ? 'Review Attention'
-                      : view.aiOrganizer?.unreadableCount
-                        ? 'Unreadable Content'
-                        : view.aiOrganizer?.processingComplete
-                          ? 'Organized & Verified'
-                          : 'Processing Evidence'
-                  }
-                  tone={
-                    view.aiOrganizer?.corruptedCount || view.aiOrganizer?.mismatchCount
-                      ? 'red'
-                      : view.aiOrganizer?.unreadableCount
-                        ? 'amber'
-                        : view.aiOrganizer?.processingComplete
-                          ? 'green'
-                          : 'blue'
-                  }
-                />
-              </div>
-
-              <div className="intake-organizer-metrics">
-                <div className="intake-organizer-stat">
-                  <small>Clinical Evidence</small>
-                  <b>
-                    {organizer?.totalPhysicalMedicalFiles ?? medicalDocuments.length} physical {medicalDocuments.length === 1 ? 'file' : 'files'} · {medicalItems.length} logical reports ({organizer?.totalMedicalPages ?? medicalDocuments.reduce((sum, d) => sum + (d.pageCount || 0), 0)} pgs)
-                  </b>
-                </div>
-                <div className="intake-organizer-stat">
-                  <small>Request Metadata</small>
-                  <b>{organizer?.totalMetadataDocs ?? metadataDocuments.length} administrative {metadataDocuments.length === 1 ? 'file' : 'files'}</b>
-                </div>
-                <div className="intake-organizer-stat">
-                  <small>Readability Quality</small>
-                  <b>{organizer?.qualityScore ?? view.qualityRate ?? 100}% readable</b>
-                </div>
-                <div className="intake-organizer-stat">
-                  <small>File Integrity</small>
-                  <span className={`stat-badge ${organizer?.corruptedCount ? 'alert' : 'good'}`}>
-                    {organizer?.corruptedCount ? `⚠ ${organizer.corruptedCount} Corrupted` : '✓ Checksum Validated'}
-                  </span>
-                </div>
-                <div className="intake-organizer-stat">
-                  <small>Claimant Match</small>
-                  <span className={`stat-badge ${organizer?.mismatchCount ? 'alert' : 'good'}`}>
-                    {organizer?.mismatchCount ? `⚠ ${organizer.mismatchCount} Mismatch (Action Required)` : '✓ Claimant Aligned'}
-                  </span>
-                </div>
-                <div className="intake-organizer-stat">
-                  <small>Duplicate Check</small>
-                  <span className={`stat-badge ${organizer?.duplicateCount ? 'warn' : 'good'}`}>
-                    {organizer?.duplicateCount ? `⚠ ${organizer.duplicateCount} Duplicate(s) (Action Required)` : '✓ No Duplicates'}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* ESR Request Metadata (XML) — Preserved separately from medical evidence */}
-            {(metadataDocuments.length > 0 || logicalMetadataDocs.length > 0) && (
-              <div className="intake-metadata-box">
-                <div className="intake-metadata-heading">
-                  <h4><FileText size={16} /> ESR Request Metadata (Prime XML / Ingestion References)</h4>
-                  <span>Administrative Only · Kept Distinct from Clinical Evidence</span>
-                </div>
-                <ul className="intake-metadata-list">
-                  {(logicalMetadataDocs.length > 0 ? logicalMetadataDocs : metadataDocuments).map(doc => (
-                    <li key={doc.id} className="intake-metadata-item">
-                      <div className="intake-metadata-info">
-                        <span className="intake-format-badge xml">{doc.sourceReference?.toLowerCase().endsWith('.xml') ? 'XML' : 'ADMIN'}</span>
-                        <strong>{documentName(doc.title)}</strong>
-                        <span style={{ color: '#64748b' }}>({doc.sourceReference})</span>
-                      </div>
-                      <Status text="Administrative Record" tone="slate" />
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
             <div className="intake-content-heading">
               <div>
-                <h3>Medical Evidence Documents</h3>
+                <h3>Evidence library</h3>
                 <p>
-                  {organizer?.totalPhysicalMedicalFiles ?? medicalDocuments.length} physical {medicalDocuments.length === 1 ? 'file' : 'files'} · {medicalItems.length} categorized logical reports ({organizer?.totalMedicalPages ?? medicalDocuments.reduce((sum, d) => sum + (d.pageCount || 0), 0)} total pages)
+                  {medicalItems.length} {medicalItems.length === 1 ? 'report' : 'reports'} · {medicalItems.reduce((sum, item) => sum + item.pageCount, 0)} pages
                   {view.unreadablePages > 0 && ` · ${view.unreadablePages} unreadable pages`}
                 </p>
               </div>
               <div className="intake-document-tools">
-                {view.canAttach && <button type="button" className="intake-secondary" onClick={() => setImportTarget({ type: 'source', esrId: selected.id })}><Plus size={16} /> Add source</button>}
+                {view.canAttach && <button type="button" id="intake-add-source" className="intake-secondary" onClick={event => openImport(event.currentTarget, { type: 'source', esrId: selected.id })}><Plus size={16} /> Add source</button>}
               </div>
             </div>
 
-            {/* Categorized Document Folders */}
-            {categoryFolders.length > 1 && (
-              <div className="intake-category-folders" role="group" aria-label="Document category folders">
-                {categoryFolders.map(folder => (
-                  <button
-                    key={folder.key}
-                    type="button"
-                    className="intake-folder-pill"
-                    aria-pressed={selectedCategory === folder.key}
-                    onClick={() => setSelectedCategory(folder.key)}
-                  >
-                    <Folder size={14} />
-                    <span>{folder.label}</span>
-                    <small>{folder.docCount} docs · {folder.pageCount} pgs</small>
-                  </button>
-                ))}
-              </div>
-            )}
+            {categoryFolders.length > 0 && <label className="intake-library-filter">Category
+              <select value={currentCategory} onChange={event => setSelectedCategory(event.target.value)}>
+                <option value="all">All evidence ({medicalItems.length})</option>
+                {categoryFolders.map(item => <option key={item.key} value={item.key}>{item.label} ({item.count})</option>)}
+              </select></label>}
 
             {filteredMedicalDocuments.length ? (
-              <ul className="intake-sources">
+              <ul className="intake-sources review-document-list" tabIndex={0} aria-label="Evidence library documents">
                 {filteredMedicalDocuments.map(item => (
                   <SourceRow
                     key={item.id}
-                    document={item}
+                    document={item} categories={categories} parent={'parentDocumentId' in item ? state.evidenceDocumentsById[item.parentDocumentId] : undefined}
                     busy={processing}
                     isDuplicate={duplicateDocIds.has(item.id)}
                     onReclassify={(newCat) => { void run(updateDocumentCategory(item.id, newCat)); }}
@@ -688,24 +407,29 @@ export function IntakePage(props: IntakeProps) {
               <div className="intake-empty-evidence-box">
                 <FileText size={28} className="intake-empty-evidence-icon" />
                 <div className="intake-empty-evidence-text">
-                  <h4>No clinical medical records attached yet</h4>
+                  <h4>No supporting evidence yet</h4>
                   <p>
                     {metadataDocuments.length > 0
-                      ? 'The ESR Request XML has been recorded (claimant details & examination instructions verified). Clinical medical evidence (PDF/scanned images) must now be attached before triage handoff.'
-                      : 'No clinical source documents match the selected category filter.'}
+                      ? 'Request metadata is on file. Attach supporting records before handoff.'
+                      : 'Attach a source document to start evidence review.'}
                   </p>
                 </div>
                 {view.canAttach && (
                   <button
                     type="button"
                     className="intake-primary"
-                    onClick={() => setImportTarget({ type: 'source', esrId: selected.id })}
+                    id="intake-attach-first-source"
+                    onClick={event => openImport(event.currentTarget, { type: 'source', esrId: selected.id })}
                   >
-                    <Plus size={16} /> Attach Medical Evidence (PDF / Folder)
+                    <Plus size={16} /> Attach documents
                   </button>
                 )}
               </div>
             )}
+            {(logicalMetadataDocs.length > 0 || metadataDocuments.length > 0) && <details className="intake-subdetails intake-metadata-details">
+              <summary><ChevronRight size={16} />Request metadata ({logicalMetadataDocs.length || metadataDocuments.length})</summary>
+              <ul className="intake-sources review-document-list" tabIndex={0} aria-label="Request metadata documents">{(logicalMetadataDocs.length ? logicalMetadataDocs : metadataDocuments).map(doc => <SourceRow key={doc.id} document={doc} parent={'parentDocumentId' in doc ? state.evidenceDocumentsById[doc.parentDocumentId] : undefined} categories={categories} busy={processing} />)}</ul>
+            </details>}
             {view.canProcessLegacy && <button type="button" className="intake-text-action" disabled={processing}
               onClick={() => { void run(completeDocumentProcessing(selected.id)); }}><RefreshCw size={15} /> Update document status</button>}
             <DocumentReviewAssistant key={selected.id} esrId={selected.id} />
@@ -727,19 +451,19 @@ export function IntakePage(props: IntakeProps) {
                   <div className="intake-issue-actions">
                     {issue.status === 'open' && <button type="button" className="intake-secondary" disabled={processing || !note.trim()}
                       onClick={() => { void run(reviewIntakeException(issue.id, 'escalated', note)); }}>Escalate</button>}
-                    {Boolean(issue.documentId || issue.kind === 'duplicate-document') && (
+                    {issue.documentId && (
                       <button
                         type="button"
                         className="intake-secondary"
                         style={{ color: '#b91c1c', borderColor: '#fca5a5' }}
                         disabled={processing}
                         onClick={() => {
-                          const exclusionNote = note.trim() || 'Duplicate file excluded from evidence by staff.';
+                          const exclusionNote = note.trim() || 'Source file excluded from evidence by staff.';
                           void run(reviewIntakeException(issue.id, 'excluded', exclusionNote));
                         }}
-                        title="Exclude this duplicate file from evidence"
+                        title="Exclude the entire source file from this case’s evidence"
                       >
-                        <Trash2 size={16} /> Exclude Duplicate
+                        <Trash2 size={16} /> Exclude source file
                       </button>
                     )}
                     <button type="button" className="intake-secondary" disabled={processing}
@@ -787,10 +511,6 @@ export function IntakePage(props: IntakeProps) {
           </button>}
         </footer>
       </section> : <section className="intake-case-empty"><Inbox size={28} /><h2>No case selected</h2><p>Choose a case from the queue or receive a new ESR.</p></section>}
-    </div>
-
-    {importTarget && <ImportDialog title={importTarget.type === 'esr' ? 'Receive a new ESR' : 'Add a source document'} onClose={() => setImportTarget(undefined)}>
-      <IntakeImport esrId={importTarget.type === 'source' ? importTarget.esrId : undefined} onReceived={imported} />
-    </ImportDialog>}
+    </div>}
   </div>;
 }

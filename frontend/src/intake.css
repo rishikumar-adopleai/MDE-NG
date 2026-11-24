@@ -216,7 +216,7 @@
 .intake-source-actions .intake-icon-button { width: 34px; min-height: 34px; }
 .intake-excerpts summary, .intake-subdetails > summary { display: flex; gap: 4px; align-items: center; width: fit-content; color: var(--intake-accent); font-size: 13px; font-weight: 700; cursor: pointer; }
 .intake-excerpts summary { padding: 5px 0; }
-.intake-excerpts[open] summary svg, .intake-subdetails[open] > summary svg { transform: rotate(90deg); }
+.intake-excerpts[open] > summary svg, .intake-subdetails[open] > summary svg { transform: rotate(90deg); }
 .intake-excerpts blockquote { margin: 8px 0 0; padding: 10px 12px; border-left: 3px solid #9ecbbe; background: #f4f9f7; }
 .intake-excerpts blockquote b { font-size: 12px; }
 .intake-subdetails { margin-top: 14px; }
@@ -366,8 +366,8 @@
 .triage-page .intake-sections { border-top: 1px solid var(--intake-line); }
 .triage-evidence-list { display: grid; gap: 8px; }
 .triage-evidence { border: 1px solid var(--intake-line); border-radius: 10px; }
-.triage-evidence summary { display: flex; align-items: center; gap: 11px; min-width: 0; padding: 10px; cursor: pointer; }
-.triage-evidence summary:hover { background: #f7fbf9; border-radius: inherit; }
+.triage-evidence > summary { display: flex; align-items: center; gap: 11px; min-width: 0; padding: 10px; cursor: pointer; }
+.triage-evidence > summary:hover { background: #f7fbf9; border-radius: inherit; }
 .triage-document-name { min-width: 0; display: grid; gap: 4px; flex: 1; overflow-wrap: anywhere; font-size: 14px; }
 .triage-document-name small, .triage-source-reference, .triage-specialty { color: var(--intake-muted); font-size: 12px; }
 .triage-chevron { flex: none; color: var(--intake-accent); }

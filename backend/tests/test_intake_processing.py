@@ -5,12 +5,13 @@ from unittest.mock import patch
 
 import httpx
 from pydantic import SecretStr
+from fastapi import HTTPException
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app.core.config import Settings
 from app.services import intake_processing
-from app.services.intake_store import add_case
+from app.services.intake_store import add_case, apply_intake_command
 from app.services.intake_view import public_document, public_processing_message, with_intake_views
 from app.services.workspace_store import empty_workspace
 
@@ -120,7 +121,7 @@ class IntakeProcessingTests(unittest.TestCase):
         esr_id = esr["id"]
         state["workItemsById"][esr_id] = {"esrId": esr_id, "stage": "Intake", "status": "queued"}
         # Case 1: Without manifest -> Unverified
-        esr.pop("documentManifest", None)
+        self.assertNotIn("documentManifest", esr)
         view = with_intake_views(state)["intake"]["viewsByEsrId"][esr_id]
         self.assertEqual(view["manifestStatus"], "unverified")
 
@@ -156,6 +157,29 @@ class IntakeProcessingTests(unittest.TestCase):
         view = with_intake_views(state)["intake"]["viewsByEsrId"][esr_id]
         self.assertEqual(view["manifestStatus"], "verified")
         self.assertEqual(len(view["missingDocuments"]), 0)
+
+        expected = esr["documentManifest"]["expectedDocuments"] = [{"id": "DOC-STR"}, {"title": "Requested imaging"}]
+        self.assertEqual(with_intake_views(state)["intake"]["viewsByEsrId"][esr_id]["missingDocuments"], expected[1:])
+        esr["documentManifest"]["expectedDocuments"] = []
+        self.assertEqual(with_intake_views(state)["intake"]["viewsByEsrId"][esr_id]["manifestStatus"], "unverified")
+
+    def test_single_report_category_changes_are_reflected_in_the_organizer(self):
+        state = empty_workspace()
+        esr = add_case(state, "Test Veteran", ["Knee condition"], "reviewer", "2026-01-01T10:00:00Z")
+        esr_id = esr["id"]
+        state["workItemsById"][esr_id] = {"esrId": esr_id, "stage": "Intake", "status": "queued"}
+        doc = {"id": "doc-test", "esrId": esr_id, "title": "Benefits notice", "sourceReference": "notice.pdf", "category": "other",
+               "pageCount": 1, "classifiedPageCount": 1, "unreadablePageCount": 0, "classificationStatus": "indexed",
+               "sections": [{"sectionId": "sec-1", "title": "Benefits notice", "category": "other"}]}
+        state["evidenceDocumentsById"][doc["id"]] = doc
+        esr["evidenceDocumentIds"] = [doc["id"]]
+        for target, category in [(doc["id"], "insurance-financial"), ("doc-test::sec-1", "administrative-correspondence")]:
+            apply_intake_command(state, "updateDocumentCategory", [target, category], "reviewer")
+            self.assertEqual(doc["category"], category)
+            self.assertEqual(doc["sections"][0]["category"], category)
+        for target, category in [("doc-test::missing", "other"), (doc["id"], "not-a-category")]:
+            with self.assertRaises(HTTPException):
+                apply_intake_command(state, "updateDocumentCategory", [target, category], "reviewer")
 
     def test_detect_sections_splits_combined_reports_in_document(self):
         pages = {

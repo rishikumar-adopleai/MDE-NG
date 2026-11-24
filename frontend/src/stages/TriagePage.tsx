@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, CheckCircle2, ChevronDown, ClipboardList, FileText, Inbox, MessageSquare, Search, X } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';
 import type { Contention, EvidenceDocument, TriagePlan, TriageWorkspaceView } from '../domain/model';
-import { documentName, formatStatus, practiceCaseLabel } from './presentation';
+import { documentName, formatCategory, practiceCaseLabel } from './presentation';
+import { EvidenceBrief, buildEvidenceBrief } from './EvidenceBrief';
 import { Status } from './shared';
 import { resultEntityId } from './StageWorkbench';
 import { StageAIReview } from './StageAIReview';
@@ -31,23 +32,19 @@ const pathwayLabels = {
 
 function EvidenceList({ documents, contentionId }: { documents: EvidenceDocument[]; contentionId: string }) {
   return <section className="intake-case-content" aria-labelledby="triage-evidence-heading">
-    <div className="intake-content-heading"><div><h3 id="triage-evidence-heading">Linked source documents</h3><p>Review source excerpts for this contention before approving the examination plan.</p></div></div>
-    {documents.length ? <div className="triage-evidence-list">
+    <div className="intake-content-heading"><div><h3 id="triage-evidence-heading">Linked source documents</h3><p>Open a document for its summary. Check the cited text before approving the plan for this contention.</p></div></div>
+    {documents.length ? <div className="triage-evidence-list review-document-list" role="region" tabIndex={0} aria-label="Linked evidence documents">
       {documents.map(document => {
-        const excerpts = document.syntheticExcerpts?.filter(excerpt => excerpt.contentionId === contentionId) ?? [];
-        const sources = excerpts.length ? excerpts.map(excerpt => ({ key: excerpt.id, page: excerpt.pageNumber, text: excerpt.text })) :
-          (document.processing?.sources ?? []).map((source, index) => ({ ...source, key: String(index) }));
+        const brief = buildEvidenceBrief(document, undefined, contentionId);
         return <details className="triage-evidence" key={document.id}>
           <summary>
             <span className="triage-document-icon"><FileText size={19} /></span>
-            <span className="triage-document-name"><strong>{documentName(document.title)}</strong><small>{document.administrativeOnly
-              ? 'Request metadata' : `${formatStatus(document.category)} · ${document.classifiedPageCount} of ${document.pageCount} pages readable`}</small></span>
+            <span className="triage-document-name"><strong>{documentName(brief.title)}</strong><small>{document.administrativeOnly
+              ? 'Request metadata' : `${formatCategory(document.category)} · ${document.classifiedPageCount} of ${document.pageCount} pages readable`}</small></span>
             <ChevronDown className="triage-chevron" size={17} aria-hidden="true" />
           </summary>
           <div className="triage-evidence-content">
-            <p className="triage-source-reference">{document.sourceReference}</p>
-            {sources.length ? sources.map(source => <blockquote key={source.key}><b>{document.administrativeOnly ? 'Contention' : 'Page'} {source.page}</b><p>{source.text}</p></blockquote>) :
-              <p>No source excerpt is available for this document.</p>}
+            <EvidenceBrief brief={brief} sourceName={document.sourceReference} administrative={document.category === 'va-request' && document.administrativeOnly} />
           </div>
         </details>;
       })}

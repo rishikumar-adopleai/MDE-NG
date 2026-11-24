@@ -1,6 +1,6 @@
 import type {
   ActivityAction, ActivityEvent, Appointment, AppointmentLogistics, Communication, Contention, DBQ, DBQVersion, DiagnosticOrder, DeliveryEvent, EntityId, Examination, ExaminationRequirement,
-  FieldValues, IntakeException, Modality, PackageManifest, QAReview, QAFinding, ResultsPackage, WorkspaceState,
+  EvidenceDocument, FieldValues, IntakeException, Modality, PackageManifest, QAReview, QAFinding, ResultsPackage, WorkspaceState,
 } from '../domain/model.ts';
 import { refreshWorkItems } from '../domain/selectors.ts';
 

@@ -14,7 +14,7 @@ from app.core.database import SessionLocal
 from app.services.intake_common import example_claimant
 from app.models import OutboxJob
 from app.services.intake_processing import DocumentProcessingError, process_document
-from app.services.intake_view import READABLE_EVIDENCE_BLOCKER, has_intake_evidence, with_intake_views
+from app.services.intake_view import EVIDENCE_CATEGORIES, READABLE_EVIDENCE_BLOCKER, has_intake_evidence, with_intake_views
 from app.services.workspace_store import get_state, save_next_state
 
 TASK_NAME = "intake.process_document"
@@ -135,27 +135,6 @@ def add_case(state: dict, name: str | None, titles: list[str], actor: str, now: 
         "isSimulated": is_simulated,
         "receiptStatus": "received", "receiptReference": reference, "aepRecordedAt": now,
         "intakeStatus": "processing",
-        "documentManifest": {
-            "manifestId": f"MNF-{esr_id[-8:].upper()}",
-            "source": "Prime EMS / VBMS eFolder Manifest",
-            "receivedAt": now,
-            "expectedDocuments": [
-                {
-                    "id": "exp-doc-1",
-                    "title": "Service Treatment Records (Active Duty)",
-                    "expectedCategory": "service-treatment",
-                    "expectedPages": 14,
-                    "required": True,
-                },
-                {
-                    "id": "exp-doc-2",
-                    "title": "VA Medical Center Treatment Notes",
-                    "expectedCategory": "va-medical-records",
-                    "expectedPages": 8,
-                    "required": True,
-                },
-            ],
-        },
     }
     if example:
         esr["intakeOrigin"] = "example"
@@ -458,26 +437,24 @@ def apply_intake_command(state: dict, action: str, args: list, actor: str) -> di
         if len(args) < 2 or not isinstance(args[1], str) or not args[1].strip():
             raise HTTPException(422, "Select a valid document category.")
         new_category = args[1].strip()
-        valid_cats = {
-            "service-treatment", "va-medical-records", "private-medical-records",
-            "hospital", "laboratory", "imaging", "prior-examination", "other",
-        }
-        if new_category not in valid_cats:
+        if new_category not in EVIDENCE_CATEGORIES and new_category != "hospital":
             raise HTTPException(422, f"Invalid category {new_category}.")
 
-        if section_id and doc.get("sections"):
-            for sec in doc["sections"]:
-                if sec.get("sectionId") == section_id:
-                    sec["category"] = new_category
-                    sec["userReclassified"] = True
-                    sec["status"] = "indexed"
-                    sec["actionRequired"] = False
-                    sec["issues"] = []
+        sections = doc.get("sections", [])
+        if section_id:
+            section = next((item for item in sections if item.get("sectionId") == section_id), None)
+            if section is None:
+                raise HTTPException(404, "Document section not found.")
+            section.update(category=new_category, userReclassified=True, status="indexed", actionRequired=False, issues=[])
+            if len(sections) == 1:
+                doc["category"] = new_category
             touch(doc, now, userReclassified=True)
             for k, issue in list(state["intakeExceptionsById"].items()):
                 if issue.get("documentId") == doc_id and section_id in k and issue["status"] == "open":
                     touch(issue, now, status="resolved", resolution=f"Category confirmed as {new_category} by staff.")
         else:
+            if len(sections) == 1:
+                sections[0].update(category=new_category, userReclassified=True)
             touch(doc, now, category=new_category, userReclassified=True, classificationStatus="indexed")
             issue_id = f"issue-{doc_id}-processing"
             if issue_id in state["intakeExceptionsById"]:

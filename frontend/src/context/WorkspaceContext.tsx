@@ -10,7 +10,7 @@ type WorkspaceContextValue = {
   storageError: string;
   runtime: WorkspaceRuntime | undefined;
   receiveIntakeExample: (scenario: string) => Promise<string>;
-  importIntakeDocument: (body: FormData, esrId?: string) => Promise<string>;
+  importIntakeDocument: (body: FormData, esrId?: string, examManagementRequest?: boolean) => Promise<string>;
   retryIntakeDocument: (esrId: string, documentId: string) => Promise<CommandResult>;
   reviewIntakeException: (id: EntityId, disposition: 'resolved' | 'escalated' | 'excluded', resolution: string) => Promise<CommandResult>;
   recordIntakeReceipt: (id: EntityId, receiptReference?: string) => Promise<CommandResult>;
@@ -130,11 +130,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return operation;
   }, [acceptState]);
 
-  const importIntakeDocument = useCallback(async (body: FormData, esrId?: string) => {
+  const importIntakeDocument = useCallback(async (body: FormData, esrId?: string, examManagementRequest = false) => {
     const version = sessionVersion.current;
-    const file = body.get('file');
-    const xml = !esrId && file instanceof File && file.name.toLowerCase().endsWith('.xml');
-    const result = xml
+    const result = !esrId && examManagementRequest
       ? await receiveIntakeXml(body)
       : await intakeRequest(esrId ? `/${encodeURIComponent(esrId)}/documents` : '', body);
     acceptState(result.state, version);
