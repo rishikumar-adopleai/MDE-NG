@@ -1,0 +1,26 @@
+[
+  {
+    "file": "Exact_Duplicate_CBC.pdf",
+    "issue": "Exact duplicate of CBC PDF"
+  },
+  {
+    "file": "Wrong_Patient_Record.pdf",
+    "issue": "Claimant mismatch"
+  },
+  {
+    "file": "Unreadable_Blurred_Scan.pdf",
+    "issue": "OCR unreadable/low confidence"
+  },
+  {
+    "file": "Corrupted_PDF.pdf",
+    "issue": "Invalid/corrupted PDF"
+  },
+  {
+    "file": "Unsupported_Example.bin",
+    "issue": "Unsupported file type"
+  },
+  {
+    "file": "Mixed_Medical_Efolder_16_pages.pdf",
+    "issue": "Includes repeated CBC page and unrelated patient page"
+  }
+]

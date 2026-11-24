@@ -91,8 +91,9 @@ def uploaded_document(file: UploadFile, synthetic: bool) -> tuple[str, bytes]:
     if not synthetic:
         raise HTTPException(422, "Confirm that the document contains no real claimant records.")
     filename = PurePath((file.filename or "").replace("\\", "/")).name
-    if len(filename) > 150 or not filename.lower().endswith((".pdf", ".txt")):
-        raise HTTPException(422, "Choose a PDF or UTF-8 text file with a filename under 150 characters.")
+    valid_exts = (".pdf", ".txt", ".xml", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".tif")
+    if len(filename) > 150 or not filename.lower().endswith(valid_exts):
+        raise HTTPException(422, "Choose a supported document format (PDF, TXT, XML, or Image) under 150 characters.")
     content = file.file.read(MAX_FILE_BYTES + 1)
     if not content or len(content) > MAX_FILE_BYTES:
         raise HTTPException(413, "The source file must be nonempty and at most 5 MB.")
@@ -183,15 +184,28 @@ def receive_exam_management_upload(file: IntakeFile, synthetic: Annotated[bool, 
 
 
 @router.post("/esrs/{esr_id}/documents", status_code=202)
-def attach_document(esr_id: str, file: IntakeFile, synthetic: Annotated[bool, Form()],
+def attach_document(esr_id: str,
+                    file: UploadFile = File(None),
+                    files: list[UploadFile] = File(None),
+                    synthetic: Annotated[bool, Form()] = True,
                     _user: CurrentUser = Depends(intake_actor), db: Session = Depends(get_db)) -> dict:
-    filename, content = uploaded_document(file, synthetic)
+    all_files = [f for f in (files or []) if f and f.filename]
+    if file and file.filename and file not in all_files:
+        all_files.append(file)
+    if not all_files:
+        raise HTTPException(422, "Select at least one source file.")
+
     state = get_state(db)
     esr = open_case(state, esr_id)
-    doc_id = queue_document(db, state, esr, filename, content, timestamp())
+    now = timestamp()
+    doc_ids = []
+    for f in all_files:
+        filename, content = uploaded_document(f, synthetic)
+        doc_id = queue_document(db, state, esr, filename, content, now)
+        doc_ids.append(doc_id)
     next_state = save_state(db, state, esr["id"])
     db.commit()
-    return {"esrId": esr_id, "documentId": doc_id, "state": with_triage_view(with_intake_views(next_state))}
+    return {"esrId": esr_id, "documentId": doc_ids[0] if doc_ids else None, "documentIds": doc_ids, "state": with_triage_view(with_intake_views(next_state))}
 
 
 @router.post("/esrs/{esr_id}/documents/{document_id}/retry", status_code=202)

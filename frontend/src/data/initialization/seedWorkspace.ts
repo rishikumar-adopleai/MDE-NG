@@ -142,6 +142,39 @@ export function createSeedWorkspace(): WorkspaceState {
         sourceReference: `${['STR', 'HOSP', 'LAB', 'PRIOR', 'IMG', 'VA-REQ'][index % 6]}-${String(i * 10 + index + 1).padStart(4, '0')}.pdf · pp. ${1 + index * 3}-${3 + index * 3}`,
         pageCount, classifiedPageCount: classificationStatus === 'indexed' ? pageCount - unreadablePageCount : Math.max(0, Math.floor(pageCount * 0.75)), unreadablePageCount,
         classificationStatus, contentionIds: contentionIds.slice(index % contentionCount, Math.min(contentionCount, (index % contentionCount) + 2)),
+        quality: {
+          fileIntegrity: 'passed',
+          sha256: `sha256-${documentId}`,
+          readabilityScore: unreadablePageCount > 0 ? 80 : 100,
+          qualityStatus: unreadablePageCount > 0 ? 'needs-review' : 'passed',
+          readablePages: classificationStatus === 'indexed' ? pageCount - unreadablePageCount : Math.max(0, Math.floor(pageCount * 0.75)),
+          totalExpectedPages: pageCount,
+          claimantMatch: 'aligned',
+          ocrApplied: index % 3 === 0,
+          ocrConfidence: 96,
+        },
+        ...(index % 6 === 2 ? {
+          extractedData: {
+            labPanels: [
+              {
+                panelName: 'Complete Blood Count (CBC) with Differential',
+                collectionDate: '2024-03-14',
+                specimen: 'Whole Blood',
+                orderingProvider: 'VA Medical Center Outpatient Clinic',
+                results: [
+                  { name: 'White Blood Cell Count (WBC)', value: '7.4', units: '10*3/uL', referenceRange: '4.0 - 11.0', flag: 'normal' },
+                  { name: 'Red Blood Cell Count (RBC)', value: '4.85', units: '10*6/uL', referenceRange: '4.30 - 5.90', flag: 'normal' },
+                  { name: 'Hemoglobin (Hgb)', value: '14.8', units: 'g/dL', referenceRange: '13.5 - 17.5', flag: 'normal' },
+                  { name: 'Hematocrit (Hct)', value: '44.2', units: '%', referenceRange: '38.8 - 50.0', flag: 'normal' },
+                  { name: 'Platelet Count', value: '235', units: '10*3/uL', referenceRange: '150 - 450', flag: 'normal' },
+                  { name: 'Fasting Blood Glucose', value: '108', units: 'mg/dL', referenceRange: '70 - 99', flag: 'abnormal' },
+                  { name: 'Serum Creatinine', value: '1.02', units: 'mg/dL', referenceRange: '0.70 - 1.30', flag: 'normal' },
+                  { name: 'Estimated GFR (eGFR)', value: '86', units: 'mL/min', referenceRange: '> 60', flag: 'normal' },
+                ],
+              },
+            ],
+          },
+        } : {}),
       };
       state.evidenceDocumentsById[documentId] = doc;
       if (unreadablePageCount > 0) {

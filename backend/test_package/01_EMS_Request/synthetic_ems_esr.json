@@ -1,0 +1,25 @@
+{
+  "data_type": "synthetic_ems_esr_received",
+  "source": "SIMULATED_PRIME_EMS",
+  "case": {
+    "claimant_id": "SYN-CLAIM-1001",
+    "name": "Jordan Sample",
+    "dob": "1985-04-12",
+    "esr_id": "DEMO-ESR-2026-1001",
+    "contentions": [
+      "right shoulder condition",
+      "hearing difficulty",
+      "dermatitis"
+    ]
+  },
+  "event_id": "DEMO-EMS-EVENT-0001",
+  "received_at": "2026-11-23T10:00:00Z",
+  "attachments": [
+    {
+      "filename": "Mixed_Medical_Efolder_16_pages.pdf",
+      "format": "application/pdf",
+      "relationship": "medical_evidence_bundle"
+    }
+  ],
+  "note": "Simulated EMS event only; no authoritative claim that other records do not exist."
+}

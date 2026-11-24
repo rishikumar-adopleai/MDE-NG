@@ -10,6 +10,7 @@ export function IntakeImport({ esrId, onReceived }: {
   const { importIntakeDocument, receiveIntakeExample } = useWorkspace();
   const fileInput = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File>();
+  const [files, setFiles] = useState<File[]>([]);
   const [name, setName] = useState('');
   const [contentions, setContentions] = useState('');
   const [synthetic, setSynthetic] = useState(false);
@@ -49,6 +50,9 @@ export function IntakeImport({ esrId, onReceived }: {
     if (!file || !synthetic) return;
     const body = new FormData();
     body.set('file', file);
+    if (files.length > 0) {
+      files.forEach(f => body.append('files', f));
+    }
     body.set('synthetic', String(synthetic));
     if (!esrId && !xml) {
       body.set('name', name.trim());
@@ -60,6 +64,7 @@ export function IntakeImport({ esrId, onReceived }: {
       const received = await importIntakeDocument(body, esrId);
       if (fileInput.current) fileInput.current.value = '';
       setFile(undefined);
+      setFiles([]);
       setSynthetic(false);
       onReceived(received);
     } catch (failure) {
@@ -79,14 +84,19 @@ export function IntakeImport({ esrId, onReceived }: {
         <button type="button" className="intake-secondary" onClick={loadSample} disabled={busy || !scenario}>Open request</button>
     </div>}
     <div className="source-picker">
-      <span className="source-picker-label">{esrId ? 'Source document' : 'Upload a request or source document'}</span>
+      <span className="source-picker-label">{esrId ? 'Source document(s)' : 'Upload a request or source document'}</span>
       <label className="source-picker-control">
-        <input ref={fileInput} type="file" accept={esrId ? '.pdf,.txt' : '.xml,.pdf,.txt'} aria-label="Choose source document" disabled={busy} onChange={event => { setFile(event.target.files?.[0]); setSynthetic(false); }} />
+        <input ref={fileInput} type="file" multiple={Boolean(esrId)} accept={esrId ? '.pdf,.txt,.png,.jpg,.jpeg,.tiff,.bmp' : '.xml,.pdf,.txt,.png,.jpg,.jpeg,.tiff,.bmp'} aria-label="Choose source document" disabled={busy} onChange={event => {
+          const selected = Array.from(event.target.files ?? []);
+          setFiles(selected);
+          setFile(selected[0]);
+          setSynthetic(false);
+        }} />
         <span className="source-picker-icon">{file ? <FileText size={19} /> : <Upload size={19} />}</span>
-        <span className="source-picker-copy"><b>{file?.name ?? 'Choose a source file'}</b><small>{file
-          ? (xml ? 'Claimant and contentions will be read from the request' : 'Ready to attach')
-          : esrId ? 'PDF or UTF-8 text · up to 5 MB and 40 pages' : 'Exam Management XML, PDF or UTF-8 text'}</small></span>
-        <span className="source-picker-action" aria-hidden="true">{file ? 'Change file' : 'Browse'}</span>
+        <span className="source-picker-copy"><b>{files.length > 1 ? `${files.length} files selected` : (file?.name ?? 'Choose source file(s)')}</b><small>{file
+          ? (xml ? 'Claimant and contentions will be read from the request' : files.length > 1 ? `Ready to batch-upload and ingest ${files.length} medical records` : 'Ready to attach for OCR & LangGraph ingestion')
+          : esrId ? 'PDF, Scanned Image (PNG, JPG, TIFF) or UTF-8 text · Select one or multiple files' : 'Exam Management XML, PDF, Scanned Image or UTF-8 text'}</small></span>
+        <span className="source-picker-action" aria-hidden="true">{file ? 'Change files' : 'Browse'}</span>
       </label>
     </div>
     {needsRequestDetails && <>

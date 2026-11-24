@@ -892,3 +892,119 @@
   margin-right: 6px;
 }
 
+/* OCR and Laboratory Findings Styles */
+.intake-ocr-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+.intake-lab-findings {
+  margin-top: 10px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.intake-lab-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 8px;
+}
+
+.intake-lab-panel {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.intake-lab-panel:last-child {
+  margin-bottom: 0;
+}
+
+.intake-lab-panel-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: #f1f5f9;
+  font-size: 12px;
+  font-weight: 700;
+  color: #334155;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.intake-lab-panel-title small {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: normal;
+}
+
+.intake-lab-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  text-align: left;
+}
+
+.intake-lab-table th {
+  background: #f8fafc;
+  color: #475569;
+  font-weight: 600;
+  padding: 5px 8px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.intake-lab-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #1e293b;
+}
+
+.intake-lab-table tr.is-abnormal {
+  background: #fffbeb;
+}
+
+.intake-lab-table tr:last-child td {
+  border-bottom: none;
+}
+
+.intake-lab-flag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.intake-lab-flag.normal {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.intake-lab-flag.abnormal {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.intake-lab-flag.critical {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+

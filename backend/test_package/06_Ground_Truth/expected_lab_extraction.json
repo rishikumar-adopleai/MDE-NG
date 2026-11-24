@@ -1,0 +1,26 @@
+{
+  "patient_id": "SYN-CLAIM-1001",
+  "source": "Laboratory Report - CBC",
+  "collected": "2025-07-01",
+  "tests": [
+    {
+      "name": "Hemoglobin",
+      "value": "14.2",
+      "unit": "g/dL",
+      "reference_range": "13.5 - 17.5"
+    },
+    {
+      "name": "WBC",
+      "value": "6.8",
+      "unit": "10^3/uL",
+      "reference_range": "4.0 - 11.0"
+    },
+    {
+      "name": "Platelets",
+      "value": "245",
+      "unit": "10^3/uL",
+      "reference_range": "150 - 450"
+    }
+  ],
+  "note": "Preserve literal extracted values. No diagnosis."
+}

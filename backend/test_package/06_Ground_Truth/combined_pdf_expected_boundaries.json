@@ -1,0 +1,118 @@
+{
+  "pdf": "Mixed_Medical_Efolder_16_pages.pdf",
+  "page_count": 16,
+  "logical_segments": [
+    {
+      "start_page": 1,
+      "end_page": 1,
+      "title": "ESR Intake Cover",
+      "expected_category": "Administrative ESR Request",
+      "source_file": "01_EMS_Request/ESR_Intake_Cover.pdf"
+    },
+    {
+      "start_page": 2,
+      "end_page": 2,
+      "title": "Service Treatment Record - Shoulder",
+      "expected_category": "Service Treatment Records",
+      "source_file": "02_Source_Medical_Documents/01_service_treatment_record__shoulder.pdf"
+    },
+    {
+      "start_page": 3,
+      "end_page": 3,
+      "title": "Service Treatment Record - Skin",
+      "expected_category": "Service Treatment Records",
+      "source_file": "02_Source_Medical_Documents/02_service_treatment_record__skin.pdf"
+    },
+    {
+      "start_page": 4,
+      "end_page": 4,
+      "title": "VA Outpatient Visit",
+      "expected_category": "VA Medical Records",
+      "source_file": "02_Source_Medical_Documents/03_va_outpatient_visit.pdf"
+    },
+    {
+      "start_page": 5,
+      "end_page": 5,
+      "title": "Private Clinic Consultation",
+      "expected_category": "Private Medical Records",
+      "source_file": "02_Source_Medical_Documents/04_private_clinic_consultation.pdf"
+    },
+    {
+      "start_page": 6,
+      "end_page": 6,
+      "title": "Laboratory Report - CBC",
+      "expected_category": "Laboratory Reports",
+      "source_file": "02_Source_Medical_Documents/05_laboratory_report__cbc.pdf"
+    },
+    {
+      "start_page": 7,
+      "end_page": 7,
+      "title": "Laboratory Report - Metabolic",
+      "expected_category": "Laboratory Reports",
+      "source_file": "02_Source_Medical_Documents/06_laboratory_report__metabolic.pdf"
+    },
+    {
+      "start_page": 8,
+      "end_page": 8,
+      "title": "Diagnostic Imaging Report",
+      "expected_category": "Diagnostic Imaging",
+      "source_file": "02_Source_Medical_Documents/07_diagnostic_imaging_report.pdf"
+    },
+    {
+      "start_page": 9,
+      "end_page": 9,
+      "title": "Audiology Evaluation",
+      "expected_category": "Other Medical Documents",
+      "source_file": "02_Source_Medical_Documents/08_audiology_evaluation.pdf"
+    },
+    {
+      "start_page": 10,
+      "end_page": 10,
+      "title": "Prior DBQ-like Worksheet",
+      "expected_category": "Previous DBQs",
+      "source_file": "02_Source_Medical_Documents/09_prior_dbqlike_worksheet.pdf"
+    },
+    {
+      "start_page": 11,
+      "end_page": 11,
+      "title": "Discharge Summary",
+      "expected_category": "Hospital / Discharge Records",
+      "source_file": "02_Source_Medical_Documents/10_discharge_summary.pdf"
+    },
+    {
+      "start_page": 12,
+      "end_page": 12,
+      "title": "Unknown Handwritten-style Note",
+      "expected_category": "Needs Review / Uncertain",
+      "source_file": "02_Source_Medical_Documents/11_unknown_handwrittenstyle_note.pdf"
+    },
+    {
+      "start_page": 13,
+      "end_page": 13,
+      "title": "Laboratory Report - CBC (duplicated page)",
+      "expected_category": "Laboratory Reports",
+      "source_file": "02_Source_Medical_Documents/05_laboratory_report__cbc.pdf"
+    },
+    {
+      "start_page": 14,
+      "end_page": 14,
+      "title": "Unrelated Patient Clinical Note",
+      "expected_category": "Wrong Patient / Quarantine",
+      "source_file": "05_Exception_Tests/Wrong_Patient_Record.pdf"
+    },
+    {
+      "start_page": 15,
+      "end_page": 15,
+      "title": "Scanned Clinic Note",
+      "expected_category": "VA / Clinical Note (OCR required)",
+      "source_file": "04_OCR_Scanned/Scanned_Clinic_Note_IMAGE_ONLY.pdf"
+    },
+    {
+      "start_page": 16,
+      "end_page": 16,
+      "title": "Unreadable Blurred Scan",
+      "expected_category": "Unreadable / Human Review",
+      "source_file": "05_Exception_Tests/Unreadable_Blurred_Scan.pdf"
+    }
+  ]
+}

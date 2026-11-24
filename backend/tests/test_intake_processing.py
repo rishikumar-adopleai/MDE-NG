@@ -180,3 +180,32 @@ class IntakeProcessingTests(unittest.TestCase):
         self.assertEqual(result["quality"]["readabilityScore"], 100)
         self.assertEqual(len(result["quality"]["sha256"]), 64)
 
+    def test_langgraph_pipeline_and_ocr(self):
+        content = b"Scanned radiology imaging report. X-ray of bilateral knees."
+        result = intake_processing.process_document("scan_knee_xray.png", content)
+        self.assertEqual(result["category"], "imaging")
+        self.assertTrue(result["quality"]["ocrApplied"])
+        self.assertGreaterEqual(result["quality"]["ocrConfidence"], 90)
+        self.assertIn("extractedData", result)
+
+    def test_structured_lab_extraction(self):
+        lab_content = (
+            b"LABORATORY REPORT - VAMC CLINICAL PATHOLOGY\n"
+            b"Specimen: Whole Blood  Collected: 2024-04-10\n"
+            b"WBC: 7.5 10*3/uL (Reference: 4.0 - 11.0)\n"
+            b"Glucose: 115 mg/dL (Reference: 70 - 99)\n"
+            b"Serum Creatinine: 1.1 mg/dL (Reference: 0.70 - 1.30)\n"
+        )
+        result = intake_processing.process_document("blood_chemistry.txt", lab_content)
+        self.assertEqual(result["category"], "laboratory")
+        lab_panels = result["extractedData"]["labPanels"]
+        self.assertGreaterEqual(len(lab_panels), 1)
+        panel = lab_panels[0]
+        test_names = [t["name"] for t in panel["results"]]
+        self.assertTrue(any("WBC" in name or "White Blood Cell" in name for name in test_names))
+        self.assertTrue(any("Glucose" in name for name in test_names))
+        # Glucose 115 > 99 should be abnormal
+        glucose_item = next(t for t in panel["results"] if "Glucose" in t["name"])
+        self.assertEqual(glucose_item["flag"], "abnormal")
+
+

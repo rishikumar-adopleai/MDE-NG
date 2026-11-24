@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Activity, AlertCircle, ArrowRight, Check, CheckCircle2, ChevronDown,
-  ChevronRight, FileText, Folder, Inbox, Layers, Plus, RefreshCw, Search, X,
+  ChevronRight, FileText, FlaskConical, Folder, Inbox, Layers, Plus, RefreshCw, Search, X,
 } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';
-import type { EvidenceDocument, IntakeStatus } from '../domain/model';
+import type { EvidenceDocument, IntakeStatus, LogicalDocument } from '../domain/model';
 import { CasePanel, Status } from './shared';
 import { DocumentReviewAssistant } from './DocumentReviewAssistant';
 import { StageHeading } from './StageHeading';
@@ -68,27 +68,33 @@ const CATEGORY_OPTIONS = [
 ];
 
 function SourceRow({ document, onRetry, onReclassify, busy, isDuplicate }: {
-  document: EvidenceDocument;
-  onRetry: () => void;
+  document: LogicalDocument | EvidenceDocument;
+  onRetry?: () => void;
   onReclassify?: (category: string) => void;
   busy: boolean;
   isDuplicate?: boolean;
 }) {
-  const result = document.processing;
-  const review = document.classificationStatus === 'needs-human-review';
+  const result = 'processing' in document ? document.processing : undefined;
+  const isLogical = 'sectionId' in document;
   const indexed = document.classificationStatus === 'indexed';
+  const review = document.classificationStatus === 'needs-human-review';
   const ai = result?.provider === 'ai';
   const excerpts = result?.sources?.length ? result.sources : Array.from(new Map(
-    document.syntheticExcerpts?.map(source => [source.pageNumber, { page: source.pageNumber, text: source.text }]) ?? [],
+    ('syntheticExcerpts' in document ? document.syntheticExcerpts : undefined)?.map(source => [source.pageNumber, { page: source.pageNumber, text: source.text }]) ?? [],
   ).values());
-  const summary = result?.summary;
-  const showSummary = summary && (ai || !excerpts.some(source => source.text.startsWith(summary)));
-  const quality = document.quality;
-  const sections = document.sections;
+  const summary = isLogical ? document.summary : result?.summary;
+  const showSummary = Boolean(summary);
+  const quality = 'quality' in document ? document.quality : undefined;
+  const sections = 'sections' in document ? document.sections : undefined;
   const formatRaw = (quality?.format || document.sourceReference.split('.').pop() || 'PDF').toUpperCase();
   const formatBadgeClass = formatRaw.includes('XML') ? 'xml' : ['PNG', 'JPG', 'JPEG', 'TIFF', 'BMP'].includes(formatRaw) ? 'image' : 'pdf';
+  const ocrApplied = isLogical ? document.ocrApplied : quality?.ocrApplied;
+  const ocrConfidence = isLogical ? document.ocrConfidence : quality?.ocrConfidence;
+  const wrongPatient = isLogical ? document.wrongPatient : quality?.claimantMatch === 'mismatch';
+  const readabilityScore = isLogical ? document.readabilityScore : quality?.readabilityScore;
+  const actionRequired = isLogical ? document.actionRequired : review;
 
-  return <li className="intake-source">
+  return <li className={`intake-source${actionRequired ? ' is-action-required' : ''}`}>
     <span className="intake-source-icon"><FileText size={19} aria-hidden="true" /></span>
     <div className="intake-source-content">
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
@@ -111,22 +117,50 @@ function SourceRow({ document, onRetry, onReclassify, busy, isDuplicate }: {
           <span className="intake-source-tag">{formatCategory(document.category)}</span>
         )}
 
-        {isDuplicate && <span className="intake-issue-pill duplicate">Possible Duplicate</span>}
-        {quality?.claimantMatch === 'mismatch' && <span className="intake-issue-pill mismatch">Claimant Mismatch</span>}
-        {document.unreadablePageCount > 0 && <span className="intake-issue-pill unreadable">{document.unreadablePageCount} unreadable pgs</span>}
-        {quality?.fileIntegrity === 'corrupt' && <span className="intake-issue-pill corrupted">Corrupted File</span>}
+        {actionRequired && (
+          <span className="intake-issue-pill" style={{ background: '#fef2f2', color: '#b91c1c', borderColor: '#fca5a5', fontWeight: 600 }}>
+            Action Required
+          </span>
+        )}
+        {ocrApplied && (
+          <span className="intake-ocr-badge" title="Optical Character Recognition performed on scanned pages">
+            OCR Applied ({ocrConfidence ?? 95}%)
+          </span>
+        )}
+        {(isDuplicate || (isLogical && document.isDuplicate)) && (
+          <span className="intake-issue-pill duplicate" title={isLogical && document.duplicateOf ? `Duplicate of ${document.duplicateOf}` : undefined}>
+            {isLogical && document.duplicateOf ? `Duplicate (${document.duplicateOf})` : 'Possible Duplicate'}
+          </span>
+        )}
+        {wrongPatient && <span className="intake-issue-pill mismatch">Claimant Mismatch</span>}
+        {(readabilityScore === 0 || ('unreadablePageCount' in document && document.unreadablePageCount > 0)) && (
+          <span className="intake-issue-pill unreadable">Unreadable Scan</span>
+        )}
       </div>
-      <p>{document.sourceReference !== document.title && <>{documentName(document.sourceReference)} · </>}
-        {document.administrativeOnly ? (document.category === 'va-request' ? 'Request metadata' : 'Document reference') : document.pageCount
-          ? `${document.pageCount} ${document.pageCount === 1 ? 'page' : 'pages'}` : 'Page count pending'}
-        {quality?.readabilityScore !== undefined && ` · ${quality.readabilityScore}% readable`}
-        {document.sourceHash && ` · SHA: ${document.sourceHash.slice(0, 8)}`}
+
+      <p>
+        {isLogical ? (
+          <>
+            <strong style={{ color: '#0f172a' }}>{document.parentFileName}</strong>
+            {' · '}
+            <span>pp. {document.startPage}–{document.endPage} ({document.pageCount} {document.pageCount === 1 ? 'page' : 'pages'})</span>
+            {readabilityScore !== undefined && ` · ${readabilityScore}% readable`}
+          </>
+        ) : (
+          <>
+            {document.sourceReference !== document.title && <>{documentName(document.sourceReference)} · </>}
+            {document.administrativeOnly ? (document.category === 'va-request' ? 'Request metadata' : 'Document reference') : document.pageCount
+              ? `${document.pageCount} ${document.pageCount === 1 ? 'page' : 'pages'}` : 'Page count pending'}
+            {readabilityScore !== undefined && ` · ${readabilityScore}% readable`}
+            {document.sourceHash && ` · SHA: ${document.sourceHash.slice(0, 8)}`}
+          </>
+        )}
       </p>
 
       {sections && sections.length > 1 && (
         <div style={{ marginTop: '8px' }}>
           <small style={{ fontWeight: 600, color: 'var(--intake-muted)', display: 'block', marginBottom: '3px' }}>
-            Split Report Sections ({sections.length} detected):
+            Multi-Report Boundary Split ({sections.length} logical reports detected):
           </small>
           <div className="intake-section-chips">
             {sections.map(sec => (
@@ -139,30 +173,76 @@ function SourceRow({ document, onRetry, onReclassify, busy, isDuplicate }: {
       )}
 
       <details className="intake-excerpts">
-        <summary><ChevronRight size={15} aria-hidden="true" /> Document & quality details</summary>
+        <summary><ChevronRight size={15} aria-hidden="true" /> Report excerpts & extracted data</summary>
         {result?.error && <p className="intake-source-error">{formatWorkspaceCopy(result.error)}</p>}
         {result?.aiUnavailable && <p>Document checks completed. AI summary unavailable.</p>}
-        {quality && (
-          <div style={{ background: '#f8fafc', padding: '8px 10px', borderRadius: '6px', margin: '8px 0', fontSize: '12px' }}>
-            <div><b>Integrity:</b> {quality.fileIntegrity === 'passed' ? 'Verified Checksum' : quality.fileIntegrity}</div>
-            {quality.sha256 && <div><b>SHA-256:</b> <code style={{ fontSize: '11px' }}>{quality.sha256}</code></div>}
-            <div><b>Readability Score:</b> {quality.readabilityScore}% ({quality.readablePages ?? document.classifiedPageCount} of {quality.totalExpectedPages ?? document.pageCount} pages readable)</div>
-            {quality.claimantMatch && (
-              <div><b>Claimant Association:</b> {quality.claimantMatch === 'aligned' ? 'Aligned with ESR' : 'Claimant Name Mismatch Detected'}</div>
-            )}
+
+        {isLogical && document.issues && document.issues.length > 0 && (
+          <div style={{ background: '#fff1f2', border: '1px solid #fecdd3', padding: '8px 10px', borderRadius: '6px', margin: '8px 0', fontSize: '12px', color: '#9f1239' }}>
+            <b>Intake Issues Identified:</b>
+            <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
+              {document.issues.map((iss, idx) => <li key={idx}>{iss}</li>)}
+            </ul>
           </div>
         )}
+
         {showSummary && <div className="intake-document-summary">
-          <b>{ai ? 'AI summary' : 'Document summary'}</b>
+          <b>{ai ? 'AI summary' : 'Clinical summary'}</b>
           <p>{summary}</p>
         </div>}
-        {excerpts.map(source => <blockquote key={source.page}><b>{document.administrativeOnly ? 'Contention' : 'Page'} {source.page}</b><p>{source.text}</p></blockquote>)}
-        {!excerpts.length && !result?.error && <p>{indexed || review ? 'No source excerpts are available.' : 'Source excerpts are pending.'}</p>}
+
+        {excerpts.map(source => <blockquote key={source.page}><b>Page {source.page}</b><p>{source.text}</p></blockquote>)}
+
+        {document.extractedData?.labPanels && document.extractedData.labPanels.length > 0 && (
+          <div className="intake-lab-findings">
+            <div className="intake-lab-header">
+              <FlaskConical size={16} />
+              <span>Extracted Clinical Laboratory Findings ({document.extractedData.labPanels.length} {document.extractedData.labPanels.length === 1 ? 'panel' : 'panels'})</span>
+            </div>
+            {document.extractedData.labPanels.map((panel, idx) => (
+              <div key={idx} className="intake-lab-panel">
+                <div className="intake-lab-panel-title">
+                  <span>{panel.panelName}</span>
+                  <small>{panel.specimen && `${panel.specimen} · `}Collected: {panel.collectionDate || 'On file'}</small>
+                </div>
+                <table className="intake-lab-table">
+                  <thead>
+                    <tr>
+                      <th>Test Name</th>
+                      <th>Result</th>
+                      <th>Units</th>
+                      <th>Reference Range</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {panel.results.map((r, rIdx) => (
+                      <tr key={rIdx} className={r.flag !== 'normal' ? 'is-abnormal' : ''}>
+                        <td><b>{r.name}</b></td>
+                        <td><b>{r.value}</b></td>
+                        <td>{r.units}</td>
+                        <td>{r.referenceRange}</td>
+                        <td>
+                          <span className={`intake-lab-flag ${r.flag}`}>
+                            {r.flag === 'critical' ? 'Critical' : r.flag === 'abnormal' ? 'Abnormal' : 'Normal'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        )}
       </details>
-      {result?.retryable && <button type="button" className="intake-text-action" disabled={busy} onClick={onRetry}><RefreshCw size={15} /> {result.aiUnavailable ? 'Retry AI summary' : 'Retry document'}</button>}
+      {result?.retryable && onRetry && <button type="button" className="intake-text-action" disabled={busy} onClick={onRetry}><RefreshCw size={15} /> {result.aiUnavailable ? 'Retry AI summary' : 'Retry document'}</button>}
     </div>
     <div className="intake-source-actions">
-      <Status text={indexed ? 'Indexed' : review ? 'Needs review' : 'Processing'} tone={indexed ? 'green' : review ? 'amber' : 'blue'} />
+      <Status
+        text={actionRequired ? 'Action Required' : indexed ? 'Indexed' : review ? 'Needs Review' : 'Processing'}
+        tone={actionRequired ? 'amber' : indexed ? 'green' : review ? 'amber' : 'blue'}
+      />
     </div>
   </li>;
 }
@@ -207,64 +287,71 @@ export function IntakePage(props: IntakeProps) {
   const medicalDocuments = documents.filter(d => !d.administrativeOnly && d.category !== 'va-request');
   const metadataDocuments = documents.filter(d => d.administrativeOnly || d.category === 'va-request');
 
-  const duplicateDocIds = new Set(view?.aiOrganizer?.duplicateDocumentIds ?? []);
+  const organizer = view?.aiOrganizer;
+  const logicalMedicalDocs = organizer?.logicalDocuments ?? [];
+  const logicalMetadataDocs = organizer?.logicalMetadataDocuments ?? [];
+
+  // When logical document segmentation is available, make it the primary organization unit
+  const medicalItems = logicalMedicalDocs.length > 0 ? logicalMedicalDocs : medicalDocuments;
+
+  const duplicateDocIds = new Set(organizer?.duplicateDocumentIds ?? []);
 
   const categoryFolders = [
     {
       key: 'all',
       label: 'All Medical Evidence',
-      docCount: medicalDocuments.length,
-      pageCount: medicalDocuments.reduce((sum, d) => sum + (d.pageCount || 0), 0),
+      docCount: medicalItems.length,
+      pageCount: medicalItems.reduce((sum, d) => sum + (d.pageCount || 0), 0),
     },
     {
       key: 'service-treatment',
       label: 'Service Treatment Records',
-      docCount: medicalDocuments.filter(d => d.category === 'service-treatment').length,
-      pageCount: medicalDocuments.filter(d => d.category === 'service-treatment').reduce((sum, d) => sum + (d.pageCount || 0), 0),
+      docCount: medicalItems.filter(d => d.category === 'service-treatment').length,
+      pageCount: medicalItems.filter(d => d.category === 'service-treatment').reduce((sum, d) => sum + (d.pageCount || 0), 0),
     },
     {
       key: 'va-medical-records',
       label: 'VA Medical Records',
-      docCount: medicalDocuments.filter(d => d.category === 'va-medical-records' || d.category === 'hospital').length,
-      pageCount: medicalDocuments.filter(d => d.category === 'va-medical-records' || d.category === 'hospital').reduce((sum, d) => sum + (d.pageCount || 0), 0),
+      docCount: medicalItems.filter(d => d.category === 'va-medical-records' || d.category === 'hospital').length,
+      pageCount: medicalItems.filter(d => d.category === 'va-medical-records' || d.category === 'hospital').reduce((sum, d) => sum + (d.pageCount || 0), 0),
     },
     {
       key: 'private-medical-records',
       label: 'Private Medical Records',
-      docCount: medicalDocuments.filter(d => d.category === 'private-medical-records').length,
-      pageCount: medicalDocuments.filter(d => d.category === 'private-medical-records').reduce((sum, d) => sum + (d.pageCount || 0), 0),
+      docCount: medicalItems.filter(d => d.category === 'private-medical-records').length,
+      pageCount: medicalItems.filter(d => d.category === 'private-medical-records').reduce((sum, d) => sum + (d.pageCount || 0), 0),
     },
     {
       key: 'laboratory',
       label: 'Lab Reports',
-      docCount: medicalDocuments.filter(d => d.category === 'laboratory').length,
-      pageCount: medicalDocuments.filter(d => d.category === 'laboratory').reduce((sum, d) => sum + (d.pageCount || 0), 0),
+      docCount: medicalItems.filter(d => d.category === 'laboratory').length,
+      pageCount: medicalItems.filter(d => d.category === 'laboratory').reduce((sum, d) => sum + (d.pageCount || 0), 0),
     },
     {
       key: 'imaging',
       label: 'Diagnostic Imaging',
-      docCount: medicalDocuments.filter(d => d.category === 'imaging').length,
-      pageCount: medicalDocuments.filter(d => d.category === 'imaging').reduce((sum, d) => sum + (d.pageCount || 0), 0),
+      docCount: medicalItems.filter(d => d.category === 'imaging').length,
+      pageCount: medicalItems.filter(d => d.category === 'imaging').reduce((sum, d) => sum + (d.pageCount || 0), 0),
     },
     {
       key: 'prior-examination',
       label: 'Previous DBQs',
-      docCount: medicalDocuments.filter(d => d.category === 'prior-examination').length,
-      pageCount: medicalDocuments.filter(d => d.category === 'prior-examination').reduce((sum, d) => sum + (d.pageCount || 0), 0),
+      docCount: medicalItems.filter(d => d.category === 'prior-examination').length,
+      pageCount: medicalItems.filter(d => d.category === 'prior-examination').reduce((sum, d) => sum + (d.pageCount || 0), 0),
     },
     {
       key: 'other',
       label: 'Other Documents',
-      docCount: medicalDocuments.filter(d => d.category === 'other').length,
-      pageCount: medicalDocuments.filter(d => d.category === 'other').reduce((sum, d) => sum + (d.pageCount || 0), 0),
+      docCount: medicalItems.filter(d => d.category === 'other').length,
+      pageCount: medicalItems.filter(d => d.category === 'other').reduce((sum, d) => sum + (d.pageCount || 0), 0),
     },
   ].filter(item => item.key === 'all' || item.docCount > 0);
 
   const filteredMedicalDocuments = selectedCategory === 'all'
-    ? medicalDocuments
+    ? medicalItems
     : selectedCategory === 'va-medical-records'
-      ? medicalDocuments.filter(d => d.category === 'va-medical-records' || d.category === 'hospital')
-      : medicalDocuments.filter(d => d.category === selectedCategory);
+      ? medicalItems.filter(d => d.category === 'va-medical-records' || d.category === 'hospital')
+      : medicalItems.filter(d => d.category === selectedCategory);
 
   async function run(promise: Promise<{ ok: boolean; message: string }>, after?: () => void) {
     setProcessing(true);
@@ -417,39 +504,41 @@ export function IntakePage(props: IntakeProps) {
               <div className="intake-organizer-metrics">
                 <div className="intake-organizer-stat">
                   <small>Clinical Evidence</small>
-                  <b>{medicalDocuments.length} {medicalDocuments.length === 1 ? 'doc' : 'docs'} · {medicalDocuments.reduce((sum, d) => sum + (d.pageCount || 0), 0)} pgs</b>
+                  <b>
+                    {organizer?.totalPhysicalMedicalFiles ?? medicalDocuments.length} physical {medicalDocuments.length === 1 ? 'file' : 'files'} · {medicalItems.length} logical reports ({organizer?.totalMedicalPages ?? medicalDocuments.reduce((sum, d) => sum + (d.pageCount || 0), 0)} pgs)
+                  </b>
                 </div>
                 <div className="intake-organizer-stat">
                   <small>Request Metadata</small>
-                  <b>{metadataDocuments.length} administrative {metadataDocuments.length === 1 ? 'file' : 'files'}</b>
+                  <b>{organizer?.totalMetadataDocs ?? metadataDocuments.length} administrative {metadataDocuments.length === 1 ? 'file' : 'files'}</b>
                 </div>
                 <div className="intake-organizer-stat">
                   <small>Readability Quality</small>
-                  <b>{view.qualityRate ?? 100}% readable</b>
+                  <b>{organizer?.qualityScore ?? view.qualityRate ?? 100}% readable</b>
                 </div>
                 <div className="intake-organizer-stat">
                   <small>File Integrity</small>
-                  <span className={`stat-badge ${view.aiOrganizer?.corruptedCount ? 'alert' : 'good'}`}>
-                    {view.aiOrganizer?.corruptedCount ? `⚠ ${view.aiOrganizer.corruptedCount} Corrupted` : '✓ Checksum Validated'}
+                  <span className={`stat-badge ${organizer?.corruptedCount ? 'alert' : 'good'}`}>
+                    {organizer?.corruptedCount ? `⚠ ${organizer.corruptedCount} Corrupted` : '✓ Checksum Validated'}
                   </span>
                 </div>
                 <div className="intake-organizer-stat">
                   <small>Claimant Match</small>
-                  <span className={`stat-badge ${view.aiOrganizer?.mismatchCount ? 'alert' : 'good'}`}>
-                    {view.aiOrganizer?.mismatchCount ? `⚠ ${view.aiOrganizer.mismatchCount} Mismatch` : '✓ Claimant Aligned'}
+                  <span className={`stat-badge ${organizer?.mismatchCount ? 'alert' : 'good'}`}>
+                    {organizer?.mismatchCount ? `⚠ ${organizer.mismatchCount} Mismatch (Action Required)` : '✓ Claimant Aligned'}
                   </span>
                 </div>
                 <div className="intake-organizer-stat">
                   <small>Duplicate Check</small>
-                  <span className={`stat-badge ${view.aiOrganizer?.duplicateCount ? 'warn' : 'good'}`}>
-                    {view.aiOrganizer?.duplicateCount ? `⚠ ${view.aiOrganizer.duplicateCount} Duplicate(s)` : '✓ No Duplicates'}
+                  <span className={`stat-badge ${organizer?.duplicateCount ? 'warn' : 'good'}`}>
+                    {organizer?.duplicateCount ? `⚠ ${organizer.duplicateCount} Duplicate(s) (Action Required)` : '✓ No Duplicates'}
                   </span>
                 </div>
               </div>
             </div>
 
             {/* ESR Request Metadata (XML) — Preserved separately from medical evidence */}
-            {metadataDocuments.length > 0 && (
+            {(metadataDocuments.length > 0 || logicalMetadataDocs.length > 0) && (
               <div className="intake-metadata-box">
                 <div className="intake-metadata-heading">
                   <h4><FileText size={16} /> ESR Request Metadata (Prime XML / Ingestion References)</h4>
@@ -466,6 +555,16 @@ export function IntakePage(props: IntakeProps) {
                       <Status text="Administrative Record" tone="slate" />
                     </li>
                   ))}
+                  {logicalMetadataDocs.map(meta => (
+                    <li key={meta.id} className="intake-metadata-item">
+                      <div className="intake-metadata-info">
+                        <span className="intake-format-badge xml">ADMIN</span>
+                        <strong>{documentName(meta.title)}</strong>
+                        <span style={{ color: '#64748b' }}>({meta.sourceReference})</span>
+                      </div>
+                      <Status text="Administrative Cover" tone="slate" />
+                    </li>
+                  ))}
                 </ul>
               </div>
             )}
@@ -474,7 +573,7 @@ export function IntakePage(props: IntakeProps) {
               <div>
                 <h3>Medical Evidence Documents</h3>
                 <p>
-                  {medicalDocuments.length} clinical {medicalDocuments.length === 1 ? 'record' : 'records'} · {medicalDocuments.reduce((sum, d) => sum + (d.pageCount || 0), 0)} total pages
+                  {organizer?.totalPhysicalMedicalFiles ?? medicalDocuments.length} physical {medicalDocuments.length === 1 ? 'file' : 'files'} · {medicalItems.length} categorized logical reports ({organizer?.totalMedicalPages ?? medicalDocuments.reduce((sum, d) => sum + (d.pageCount || 0), 0)} total pages)
                   {view.unreadablePages > 0 && ` · ${view.unreadablePages} unreadable pages`}
                 </p>
               </div>
@@ -503,14 +602,14 @@ export function IntakePage(props: IntakeProps) {
             )}
 
             {filteredMedicalDocuments.length ? <ul className="intake-sources">
-              {filteredMedicalDocuments.map(document => (
+              {filteredMedicalDocuments.map(item => (
                 <SourceRow
-                  key={document.id}
-                  document={document}
+                  key={item.id}
+                  document={item}
                   busy={processing}
-                  isDuplicate={duplicateDocIds.has(document.id)}
-                  onReclassify={(newCat) => { void run(updateDocumentCategory(document.id, newCat)); }}
-                  onRetry={() => { void run(retryIntakeDocument(selected.id, document.id)); }}
+                  isDuplicate={duplicateDocIds.has(item.id)}
+                  onReclassify={(newCat) => { void run(updateDocumentCategory(item.id, newCat)); }}
+                  onRetry={() => { void run(retryIntakeDocument(selected.id, 'parentDocumentId' in item ? (item as LogicalDocument).parentDocumentId : item.id)); }}
                 />
               ))}
             </ul> : <p className="intake-inline-empty">No clinical source documents match this category folder.</p>}

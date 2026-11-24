@@ -23,7 +23,7 @@ router = APIRouter(tags=["Workspace"])
 
 COMMAND_ROLES = {
     **dict.fromkeys(("reviewIntakeException", "recordIntakeReceipt",
-                     "completeDocumentProcessing", "validateIntake"), "intake"),
+                     "completeDocumentProcessing", "validateIntake", "updateDocumentCategory"), "intake"),
     **dict.fromkeys(TRIAGE_COMMANDS, "case-builder"),
     **dict.fromkeys(("recordOutreach", "holdAppointment", "confirmAppointment",
                      "setSchedulingDistanceLimit", "recordAppointmentLogistics",

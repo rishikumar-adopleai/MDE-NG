@@ -1,0 +1,15 @@
+file,expected_category,expected_claimant,notes
+02_Source_Medical_Documents/01_service_treatment_record__shoulder.pdf,Service Treatment Records,SYN-CLAIM-1001,Synthetic text PDF
+02_Source_Medical_Documents/02_service_treatment_record__skin.pdf,Service Treatment Records,SYN-CLAIM-1001,Synthetic text PDF
+02_Source_Medical_Documents/03_va_outpatient_visit.pdf,VA Medical Records,SYN-CLAIM-1001,Synthetic text PDF
+02_Source_Medical_Documents/04_private_clinic_consultation.pdf,Private Medical Records,SYN-CLAIM-1001,Synthetic text PDF
+02_Source_Medical_Documents/05_laboratory_report__cbc.pdf,Laboratory Reports,SYN-CLAIM-1001,Synthetic text PDF
+02_Source_Medical_Documents/06_laboratory_report__metabolic.pdf,Laboratory Reports,SYN-CLAIM-1001,Synthetic text PDF
+02_Source_Medical_Documents/07_diagnostic_imaging_report.pdf,Diagnostic Imaging,SYN-CLAIM-1001,Synthetic text PDF
+02_Source_Medical_Documents/08_audiology_evaluation.pdf,Other Medical Documents,SYN-CLAIM-1001,Synthetic text PDF
+02_Source_Medical_Documents/09_prior_dbqlike_worksheet.pdf,Previous DBQs,SYN-CLAIM-1001,Synthetic text PDF
+02_Source_Medical_Documents/10_discharge_summary.pdf,Hospital / Discharge Records,SYN-CLAIM-1001,Synthetic text PDF
+02_Source_Medical_Documents/11_unknown_handwrittenstyle_note.pdf,Needs Review / Uncertain,SYN-CLAIM-1001,Synthetic text PDF
+04_OCR_Scanned/Scanned_Clinic_Note_IMAGE_ONLY.pdf,Clinical Note,SYN-CLAIM-1001,Image-only OCR
+05_Exception_Tests/Unreadable_Blurred_Scan.pdf,Needs Review,SYN-CLAIM-1001,Intentionally blurred
+05_Exception_Tests/Wrong_Patient_Record.pdf,Wrong Patient,SYN-CLAIM-9999,Do not attach to main claimant

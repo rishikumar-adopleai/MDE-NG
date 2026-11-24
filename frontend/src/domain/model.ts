@@ -329,6 +329,24 @@ export interface EvidenceDocument extends VersionedEntity {
     qualityStatus: string;
     readablePages?: number;
     totalExpectedPages?: number;
+    claimantMatch?: string;
+    ocrApplied?: boolean;
+    ocrConfidence?: number;
+  };
+  extractedData?: {
+    labPanels?: {
+      panelName: string;
+      collectionDate?: string;
+      specimen?: string;
+      orderingProvider?: string;
+      results: {
+        name: string;
+        value: string;
+        units: string;
+        referenceRange: string;
+        flag: 'normal' | 'abnormal' | 'critical';
+      }[];
+    }[];
   };
   processing?: {
     provider: 'local' | 'ai';
@@ -565,6 +583,47 @@ export interface WorkspaceState {
   activitiesById: EntityMap<ActivityEvent>;
 }
 
+export interface LogicalDocument {
+  id: string;
+  parentDocumentId: EntityId;
+  sectionId: string;
+  title: string;
+  category: 'service-treatment' | 'va-medical-records' | 'private-medical-records' | 'hospital' | 'laboratory' | 'prior-examination' | 'imaging' | 'va-request' | 'other';
+  startPage: number;
+  endPage: number;
+  pageCount: number;
+  sourceReference: string;
+  parentFileName: string;
+  classificationStatus: 'indexed' | 'needs-human-review';
+  confidence: number;
+  readabilityScore: number;
+  ocrApplied: boolean;
+  ocrConfidence: number;
+  isDuplicate: boolean;
+  duplicateOf?: string | null;
+  claimantMatch: 'aligned' | 'mismatch';
+  wrongPatient: boolean;
+  actionRequired: boolean;
+  issues: string[];
+  extractedData?: {
+    labPanels?: {
+      panelName: string;
+      collectionDate?: string;
+      specimen?: string;
+      orderingProvider?: string;
+      results: {
+        name: string;
+        value: string;
+        units: string;
+        referenceRange: string;
+        flag: 'normal' | 'abnormal' | 'critical';
+      }[];
+    }[];
+  };
+  summary?: string;
+  administrativeOnly?: boolean;
+}
+
 export interface AiOrganizerCategory {
   key: string;
   label: string;
@@ -578,6 +637,11 @@ export interface AiOrganizerSummary {
   categories: AiOrganizerCategory[];
   medicalDocuments: EntityId[];
   metadataDocuments: EntityId[];
+  logicalDocuments?: LogicalDocument[];
+  logicalMetadataDocuments?: LogicalDocument[];
+  totalPhysicalFiles?: number;
+  totalPhysicalMedicalFiles?: number;
+  totalLogicalDocs?: number;
   totalMedicalDocs: number;
   totalMetadataDocs: number;
   totalMedicalPages: number;
@@ -588,6 +652,7 @@ export interface AiOrganizerSummary {
   unreadableCount: number;
   corruptedCount: number;
   mismatchCount: number;
+  actionRequiredCount?: number;
   processingComplete: boolean;
 }
 

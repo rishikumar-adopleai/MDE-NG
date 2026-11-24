@@ -30,7 +30,7 @@ def record(record_id: str, now: str) -> dict:
 
 
 def touch(row: dict, now: str, **changes) -> None:
-    row.update(changes, version=row["version"] + 1, updatedAt=now)
+    row.update(changes, version=row.get("version", 0) + 1, updatedAt=now)
 
 
 def activity(state: dict, esr_id: str, object_id: str, action: str, actor: str, now: str) -> None:
@@ -52,7 +52,7 @@ def refresh_intake_work(state: dict, esr_id: str, now: str) -> None:
                  status: str, blockers: list[str]) -> None:
         row = {**record(key, now), "esrId": esr_id, "entityId": entity_id,
                "entityType": entity_type, "stage": stage, "title": title, "status": status,
-               "priority": esr["priority"], "blockingReasons": blockers,
+               "priority": esr.get("priority", "routine"), "blockingReasons": blockers,
                "assignedTo": esr.get("assignedTeamId")}
         if key in previous:
             row.update(createdAt=previous[key]["createdAt"], version=previous[key]["version"] + 1)
@@ -73,7 +73,8 @@ def refresh_intake_work(state: dict, esr_id: str, now: str) -> None:
                          item["title"], status, blockers)
         return
 
-    blockers = [issue["title"] for issue in state["intakeExceptionsById"].values()
+    blockers = [issue.get("title") or issue.get("detail") or "Intake exception"
+                for issue in state["intakeExceptionsById"].values()
                 if issue["esrId"] == esr_id and issue["status"] == "open"]
     if esr.get("receiptStatus") != "received" or not esr.get("aepRecordedAt"):
         blockers.append("Record the ESR receipt and AEP acknowledgement")
@@ -244,6 +245,7 @@ def finish_job(job_id: str, lease: str, document_id: str, result: dict) -> None:
                   pageCount=result.get("pageCount", 0), classifiedPageCount=result.get("readablePages", 0),
                   unreadablePageCount=result.get("unreadablePages", 0), syntheticExcerpts=excerpts,
                   sections=result.get("sections", []), quality=result.get("quality", {}),
+                  extractedData=result.get("extractedData", {}),
                   sourceHash=result.get("sourceHash", doc.get("sourceHash", "")),
                   classificationStatus="needs-human-review" if needs_review else "indexed")
             issue_id = f"issue-{document_id}-processing"
@@ -257,6 +259,46 @@ def finish_job(job_id: str, lease: str, document_id: str, result: dict) -> None:
                 }
             elif issue_id in issues:
                 touch(issues[issue_id], now, status="resolved", resolution="Document successfully reprocessed.")
+
+            # Generate granular segment-level exceptions for multi-document eFolders
+            for sec in result.get("sections", []):
+                sec_id = sec.get("sectionId", "")
+                if sec.get("isDuplicate"):
+                    sec_issue_id = f"issue-{document_id}-{sec_id}-duplicate"
+                    issues[sec_issue_id] = {
+                        **record(sec_issue_id, now), "esrId": esr["id"], "documentId": document_id,
+                        "title": f"Duplicate Record: {sec['title']} (p. {sec['startPage']})", "status": "open",
+                        "sourceReference": sec.get("sourceReference") or doc["sourceReference"],
+                        "kind": "metadata-incomplete",
+                        "detail": f"Page {sec['startPage']} ({sec['title']}) is an exact duplicate of {sec.get('duplicateOf', 'an earlier record')}. Staff review or exclusion required.",
+                    }
+                if sec.get("wrongPatient"):
+                    sec_issue_id = f"issue-{document_id}-{sec_id}-mismatch"
+                    issues[sec_issue_id] = {
+                        **record(sec_issue_id, now), "esrId": esr["id"], "documentId": document_id,
+                        "title": f"Claimant Mismatch: {sec['title']} (p. {sec['startPage']})", "status": "open",
+                        "sourceReference": sec.get("sourceReference") or doc["sourceReference"],
+                        "kind": "metadata-incomplete",
+                        "detail": f"Page {sec['startPage']} identifies a different claimant name/identifier in document text. Quarantine or staff verification required.",
+                    }
+                if sec.get("readabilityScore", 100) == 0 or sec.get("unreadable"):
+                    sec_issue_id = f"issue-{document_id}-{sec_id}-unreadable"
+                    issues[sec_issue_id] = {
+                        **record(sec_issue_id, now), "esrId": esr["id"], "documentId": document_id,
+                        "title": f"Unreadable Scanned Content: {sec['title']} (p. {sec['startPage']})", "status": "open",
+                        "sourceReference": sec.get("sourceReference") or doc["sourceReference"],
+                        "kind": "unreadable-pages",
+                        "detail": f"Page {sec['startPage']} has no readable text layer or OCR confidence is below threshold. Upload readable copy or review manually.",
+                    }
+                if sec.get("category") == "other" and not (sec.get("isDuplicate") or sec.get("wrongPatient") or sec.get("unreadable")):
+                    sec_issue_id = f"issue-{document_id}-{sec_id}-review"
+                    issues[sec_issue_id] = {
+                        **record(sec_issue_id, now), "esrId": esr["id"], "documentId": document_id,
+                        "title": f"Classification Review: {sec['title']} (p. {sec['startPage']})", "status": "open",
+                        "sourceReference": sec.get("sourceReference") or doc["sourceReference"],
+                        "kind": "metadata-incomplete",
+                        "detail": f"Page {sec['startPage']} ({sec['title']}) requires staff confirmation of medical category.",
+                    }
             pending = any(state["evidenceDocumentsById"][item]["classificationStatus"] in {"queued", "processing"}
                           for item in esr["evidenceDocumentIds"])
             touch(esr, now, intakeStatus="processing" if pending else "requires-attention")
@@ -303,7 +345,14 @@ def apply_intake_command(state: dict, action: str, args: list, actor: str) -> di
     now = timestamp()
     object_id = args[0]
     issue = state["intakeExceptionsById"].get(object_id) if action == "reviewIntakeException" else None
-    esr_id = issue["esrId"] if issue else object_id
+    if issue:
+        esr_id = issue["esrId"]
+    elif action == "updateDocumentCategory":
+        doc_key = object_id.split("::")[0]
+        doc = state["evidenceDocumentsById"].get(doc_key)
+        esr_id = doc["esrId"] if doc else None
+    else:
+        esr_id = object_id
     esr = state["esrsById"].get(esr_id)
     view = with_intake_views(state)["intake"]["viewsByEsrId"].get(esr_id)
     if not esr or not view:
@@ -340,6 +389,9 @@ def apply_intake_command(state: dict, action: str, args: list, actor: str) -> di
         event = "intake-document-reviewed"
     elif action == "updateDocumentCategory":
         doc_id = args[0]
+        section_id = args[2] if len(args) > 2 else None
+        if "::" in doc_id:
+            doc_id, section_id = doc_id.split("::", 1)
         doc = state["evidenceDocumentsById"].get(doc_id)
         if not doc:
             raise HTTPException(404, "Document not found.")
@@ -352,10 +404,24 @@ def apply_intake_command(state: dict, action: str, args: list, actor: str) -> di
         }
         if new_category not in valid_cats:
             raise HTTPException(422, f"Invalid category {new_category}.")
-        touch(doc, now, category=new_category, userReclassified=True, classificationStatus="indexed")
-        issue_id = f"issue-{doc_id}-processing"
-        if issue_id in state["intakeExceptionsById"]:
-            touch(state["intakeExceptionsById"][issue_id], now, status="resolved", resolution=f"Category manually confirmed as {new_category} by staff.")
+
+        if section_id and doc.get("sections"):
+            for sec in doc["sections"]:
+                if sec.get("sectionId") == section_id:
+                    sec["category"] = new_category
+                    sec["userReclassified"] = True
+                    sec["status"] = "indexed"
+                    sec["actionRequired"] = False
+                    sec["issues"] = []
+            touch(doc, now, userReclassified=True)
+            for k, issue in list(state["intakeExceptionsById"].items()):
+                if issue.get("documentId") == doc_id and section_id in k and issue["status"] == "open":
+                    touch(issue, now, status="resolved", resolution=f"Category confirmed as {new_category} by staff.")
+        else:
+            touch(doc, now, category=new_category, userReclassified=True, classificationStatus="indexed")
+            issue_id = f"issue-{doc_id}-processing"
+            if issue_id in state["intakeExceptionsById"]:
+                touch(state["intakeExceptionsById"][issue_id], now, status="resolved", resolution=f"Category manually confirmed as {new_category} by staff.")
         object_id = doc_id
         event = "intake-document-reviewed"
     else:
