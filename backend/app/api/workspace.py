@@ -16,7 +16,6 @@ from app.services.intake_view import with_intake_views
 from app.services.stage_ai import STAGE_TASKS, generate_stage_review
 from app.services.triage import TRIAGE_COMMANDS, apply_triage_command, with_triage_view
 from app.services.va_dbq_catalog import reference_forms
-from app.services.va_exchange_records import exchange_records
 from app.services.workspace_store import get_state, run_engine, save_next_state
 
 router = APIRouter(tags=["Workspace"])
@@ -67,7 +66,7 @@ def runtime() -> dict:
 @router.get("/workspace")
 def get_workspace(db: Session = Depends(get_db),
                   _user: CurrentUser = Depends(workspace_reader)) -> dict:
-    state = get_state(db, backfill_requests=True, load_practice=True)
+    state = get_state(db, backfill_requests=False, load_practice=False)
     return with_triage_view(with_intake_views(state)) if settings.app_env == "dev" else state
 
 
@@ -90,7 +89,7 @@ def get_source_records(
 ) -> dict:
     if settings.app_env != "dev":
         raise HTTPException(404, "Reference records are unavailable in this workspace.")
-    return {"events": exchange_records(stage),
+    return {"events": [],
             "forms": reference_forms() if stage in {"Clinical Evaluation", "Internal QA"} else []}
 
 

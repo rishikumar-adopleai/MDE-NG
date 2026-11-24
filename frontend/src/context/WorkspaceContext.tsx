@@ -12,7 +12,7 @@ type WorkspaceContextValue = {
   receiveIntakeExample: (scenario: string) => Promise<string>;
   importIntakeDocument: (body: FormData, esrId?: string) => Promise<string>;
   retryIntakeDocument: (esrId: string, documentId: string) => Promise<CommandResult>;
-  reviewIntakeException: (id: EntityId, disposition: 'resolved' | 'escalated', resolution: string) => Promise<CommandResult>;
+  reviewIntakeException: (id: EntityId, disposition: 'resolved' | 'escalated' | 'excluded', resolution: string) => Promise<CommandResult>;
   recordIntakeReceipt: (id: EntityId, receiptReference?: string) => Promise<CommandResult>;
   completeDocumentProcessing: (esrId: EntityId) => Promise<CommandResult>;
   updateDocumentCategory: (documentId: EntityId, category: string) => Promise<CommandResult>;
@@ -168,7 +168,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const value = useMemo<WorkspaceContextValue>(() => {
     return {
       state, loading, storageError, runtime, importIntakeDocument, retryIntakeDocument, receiveIntakeExample,
-      reviewIntakeException: (id, disposition, resolution) => run('reviewIntakeException', [id, disposition, resolution], disposition === 'resolved' ? 'Intake exception disposition saved.' : 'Intake escalation recorded.'),
+      reviewIntakeException: (id, disposition, resolution) => run('reviewIntakeException', [id, disposition, resolution], disposition === 'excluded' ? 'Duplicate document excluded from evidence.' : disposition === 'resolved' ? 'Intake exception disposition saved.' : 'Intake escalation recorded.'),
       recordIntakeReceipt: (id, receiptReference) => run('recordIntakeReceipt', [id, receiptReference], 'ESR receipt and acknowledgement recorded.'),
       completeDocumentProcessing: (esrId) => run('completeDocumentProcessing', [esrId], 'Document processing state saved.'),
       updateDocumentCategory: (documentId, category) => run('updateDocumentCategory', [documentId, category], 'Document category updated.'),

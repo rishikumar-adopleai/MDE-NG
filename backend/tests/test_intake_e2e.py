@@ -318,6 +318,269 @@ class IntakeEndToEndTests(unittest.TestCase):
         self.assertGreaterEqual(cats.get("laboratory", 0), 1, "Should have lab document")
         self.assertGreaterEqual(cats.get("imaging", 0), 1, "Should have imaging document")
 
+    def test_va_instructions_and_duplicate_detection(self):
+        esr_id = "DEMO-ESR-VA-001"
+        claimant_name = "Marcus Vance"
+        now = timestamp()
+
+        self.state["veteransById"]["vet-marcus"] = {
+            "id": "vet-marcus",
+            "displayName": claimant_name,
+            "claimIdentifier": "CLAIM-VA-9901",
+            "serviceGroup": "Air Force",
+        }
+        self.state["esrsById"][esr_id] = {
+            "id": esr_id,
+            "veteranId": "vet-marcus",
+            "claimantName": claimant_name,
+            "intakeStatus": "in-progress",
+            "priority": "routine",
+            "receiptStatus": "received",
+            "receivedAt": now,
+            "aepRecordedAt": now,
+            "contentionIds": ["contention-ptsd"],
+            "evidenceDocumentIds": [],
+            "specialInstructions": "Evaluate for current level of severity of service connected PTSD. Review all military treatment records.",
+        }
+        self.state["contentionsById"]["contention-ptsd"] = {
+            "id": "contention-ptsd",
+            "esrId": esr_id,
+            "title": "Post Traumatic Stress Disorder",
+            "status": "awaiting-review",
+            "requestedDbqNames": ["PSYCH PTSD (Review)"],
+            "evidenceDocumentIds": [],
+        }
+        self.state["workItemsById"]["work-intake-va-001"] = {
+            "id": "work-intake-va-001",
+            "esrId": esr_id,
+            "stage": "Intake",
+            "status": "in-progress",
+            "entityId": esr_id,
+            "priority": "routine",
+        }
+
+        # Check that with_intake_views generates rich vaInstructions
+        view_state = with_intake_views(self.state)
+        esr_view = view_state["intake"]["viewsByEsrId"][esr_id]
+        self.assertIn("vaInstructions", esr_view)
+        va_inst = esr_view["vaInstructions"]
+        self.assertEqual(va_inst["claimantName"], claimant_name)
+        self.assertEqual(va_inst["serviceBranch"], "Air Force")
+        self.assertIn("PSYCH PTSD (Review)", va_inst["requestedDbqs"])
+        self.assertIn("Evaluate for current level of severity", va_inst["specialInstructions"])
+        self.assertIn("isSimulated", va_inst)
+
+        # Verify that triage view automatically receives these instructions and simulation flag
+        from app.services.triage import with_triage_view
+        triage_state = with_triage_view(view_state)
+        triage_rows = triage_state["triage"]["rows"]
+        matching_row = next((r for r in triage_rows if r["esrId"] == esr_id), None)
+        if matching_row:
+            self.assertEqual(matching_row["specialInstructions"], va_inst["specialInstructions"])
+            self.assertEqual(matching_row["serviceBranch"], "Air Force")
+            self.assertIn("isSimulated", matching_row)
+
+        # Verify no hardcoded default instructions when none provided
+        self.state["esrsById"][esr_id]["specialInstructions"] = ""
+        view_state_empty = with_intake_views(self.state)
+        va_inst_empty = view_state_empty["intake"]["viewsByEsrId"][esr_id]["vaInstructions"]
+        self.assertEqual(va_inst_empty["specialInstructions"], "")
+
+    def test_folder_and_zip_unpacking(self):
+        import io
+        import zipfile
+        from starlette.datastructures import UploadFile
+        from app.api.intake import unpack_upload_files
+
+        # Create an in-memory zip representing a medical folder with 3 PDFs and a nested file
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("01_Orthopedic/xray_report.pdf", b"%PDF-1.4 simulated xray")
+            zf.writestr("01_Orthopedic/lab_blood_work.pdf", b"%PDF-1.4 simulated lab")
+            zf.writestr("01_Orthopedic/str_service_records.pdf", b"%PDF-1.4 simulated str")
+            zf.writestr("01_Orthopedic/.DS_Store", b"junk")
+            zf.writestr("01_Orthopedic/__MACOSX/._xray_report.pdf", b"mac-junk")
+
+        buf.seek(0)
+        zip_upload = UploadFile(filename="01_Orthopedic.zip", file=buf)
+        extracted = unpack_upload_files(zip_upload, None, synthetic=True)
+
+        self.assertEqual(len(extracted), 3, "Should unpack all 3 valid medical files, skipping system metadata")
+        extracted_names = [fn for fn, _ in extracted]
+        self.assertIn("xray_report.pdf", extracted_names)
+        self.assertIn("lab_blood_work.pdf", extracted_names)
+        self.assertIn("str_service_records.pdf", extracted_names)
+
+        # Test multi-file list upload (as when folder is selected in browser)
+        f1 = UploadFile(filename="01_Orthopedic/exam.pdf", file=io.BytesIO(b"%PDF-1.4 exam"))
+        f2 = UploadFile(filename="01_Orthopedic/notes.txt", file=io.BytesIO(b"clinical notes"))
+        extracted_multi = unpack_upload_files(None, [f1, f2], synthetic=True)
+        self.assertEqual(len(extracted_multi), 2)
+        multi_names = [fn for fn, _ in extracted_multi]
+        self.assertIn("exam.pdf", multi_names)
+        self.assertIn("notes.txt", multi_names)
+
+    def test_xml_and_medical_pdf_bundle_upload(self):
+        import io
+        from starlette.datastructures import UploadFile
+        from app.api.intake import receive_exam_management_upload
+        from app.core.database import SessionLocal
+        from app.core.security import CurrentUser
+        from app.agents.intake.parser import scenario_files, read_bundled_request
+
+        db = SessionLocal()
+        user = CurrentUser(user_id="test-staff", display_name="Test Staff", role="intake")
+
+        scenarios = scenario_files()
+        if scenarios:
+            _, path = next(iter(scenarios.values()))
+            loaded = read_bundled_request(path)
+            self.assertIsNotNone(loaded)
+            _, raw_xml = loaded
+            import re
+            from uuid import uuid4
+            unique_ref = str(uuid4())
+            xml_content = re.sub(b'examSchedulingRequestUuid="[^"]+"', f'examSchedulingRequestUuid="{unique_ref}"'.encode(), raw_xml)
+        else:
+            from uuid import uuid4
+            unique_ref = f"TEST-{uuid4().hex[:8].upper()}"
+            xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<ExamSchedulingRequest xmlns="http://va.gov/service/spec/esr/4.7">
+    <SchedulingRequestUniqueIdentifier>{unique_ref}</SchedulingRequestUniqueIdentifier>
+    <Claim>
+        <Veteran>
+            <PersonName>
+                <LastName>Smith</LastName>
+                <FirstName>John</FirstName>
+            </PersonName>
+        </Veteran>
+        <Contention>
+            <ContentionName>Right knee condition</ContentionName>
+            <DBQ>
+                <DBQName>Knee and Lower Leg</DBQName>
+            </DBQ>
+        </Contention>
+    </Claim>
+</ExamSchedulingRequest>""".encode("utf-8")
+
+        xml_upload = UploadFile(filename="ESR_Request.xml", file=io.BytesIO(xml_content))
+        pdf_upload = UploadFile(filename="service_records.pdf", file=io.BytesIO(b"%PDF-1.4 simulated records"))
+
+        res = receive_exam_management_upload(
+            file=xml_upload,
+            files=[pdf_upload],
+            synthetic=True,
+            user=user,
+            db=db
+        )
+        self.assertIn("esrId", res)
+        self.assertEqual(len(res.get("documentIds", [])), 1, "The accompanying medical PDF should be queued into the ESR")
+
+    def test_batch_upload_with_duplicate_files(self):
+        import io
+        from starlette.datastructures import UploadFile
+        from app.api.intake import create_esr
+        from app.core.database import SessionLocal
+        from app.core.security import CurrentUser
+
+        db = SessionLocal()
+        user = CurrentUser(user_id="test-staff", display_name="Test Staff", role="intake")
+
+        # Two files with identical bytes (simulating exact duplicate in a 26-file folder)
+        identical_bytes = b"%PDF-1.4 identical duplicate content"
+        f1 = UploadFile(filename="05_laboratory_report__cbc.pdf", file=io.BytesIO(identical_bytes))
+        f2 = UploadFile(filename="Exact_Duplicate_CBC.pdf", file=io.BytesIO(identical_bytes))
+        f3 = UploadFile(filename="01_service_treatment_record.pdf", file=io.BytesIO(b"%PDF-1.4 unique content"))
+
+        # Should NOT raise 409, but queue all files and record an actionable exception for the duplicate
+        res = create_esr(
+            file=f1,
+            files=[f2, f3],
+            name="Morgan Batch Test",
+            contentions="Knee Condition",
+            synthetic=True,
+            user=user,
+            db=db,
+        )
+        self.assertIn("esrId", res)
+        self.assertEqual(len(res.get("documentIds", [])), 3, "All 3 files in the folder should be accepted without crashing")
+
+        state = res["state"]
+        esr_id = res["esrId"]
+        dup_exceptions = [e for e in state.get("intakeExceptionsById", {}).values() if e.get("esrId") == esr_id and e.get("kind") == "duplicate-document"]
+        self.assertEqual(len(dup_exceptions), 1, "Should create an open duplicate exception for staff review")
+
+    def test_vbms_attachment_f_xml_parsing(self):
+        import io
+        from starlette.datastructures import UploadFile
+        from app.api.intake import inspect_esr, create_esr
+        from app.core.database import SessionLocal
+        from app.core.security import CurrentUser
+
+        xml_data = b"""<?xml version="1.0" encoding="UTF-8"?>
+<ExamSchedulingRequest synthetic="true" schemaStatus="NotValidatedAgainstVAIEPD">
+  <SchedulingRequestUniqueIdentifier>TEST-ESR-015</SchedulingRequestUniqueIdentifier>
+  <Claim>
+    <ProgramTypeCode source="simulation">CPL</ProgramTypeCode>
+    <ClaimLabel source="simulation">Disability Compensation</ClaimLabel>
+    <Veteran>
+      <FileNumber>000000015</FileNumber>
+      <VeteranName><FirstName>Emerson</FirstName><MiddleName>Q</MiddleName><LastName>Example</LastName></VeteranName>
+      <VeteranDateOfBirth>2000-02-25</VeteranDateOfBirth>
+      <PeriodOfService><BranchOfService>Coast Guard</BranchOfService></PeriodOfService>
+    </Veteran>
+  </Claim>
+  <Contention>
+    <ContentionUniqueIdentifier>TEST-015-C01</ContentionUniqueIdentifier>
+    <ContentionName>Right knee condition</ContentionName>
+    <DBQ source="simulation"><Name>Knee and Lower Leg</Name></DBQ>
+  </Contention>
+  <Contention>
+    <ContentionUniqueIdentifier>TEST-015-C02</ContentionUniqueIdentifier>
+    <ContentionName>Bilateral hearing loss</ContentionName>
+    <DBQ source="simulation"><Name>Hearing Loss and Tinnitus</Name></DBQ>
+  </Contention>
+  <Contention>
+    <ContentionUniqueIdentifier>TEST-015-C03</ContentionUniqueIdentifier>
+    <ContentionName>irritant contact dermatitis</ContentionName>
+    <DBQ source="simulation"><Name>Skin Diseases</Name></DBQ>
+  </Contention>
+</ExamSchedulingRequest>"""
+
+        db = SessionLocal()
+        user = CurrentUser(user_id="test-staff", display_name="Test Staff", role="intake")
+
+        xml_file = UploadFile(filename="ESR_Request.xml", file=io.BytesIO(xml_data))
+        pdf_file = UploadFile(filename="SF_600.pdf", file=io.BytesIO(b"%PDF-1.4 sample clinical evidence"))
+
+        # 1. Test inspection
+        insp = inspect_esr(file=xml_file, files=[pdf_file], db=db)
+        self.assertEqual(insp["claimantName"], "Emerson Q Example")
+        self.assertEqual(insp["esrReference"], "TEST-ESR-015")
+        self.assertEqual(insp["serviceBranch"], "Coast Guard")
+        self.assertEqual(len(insp["contentions"]), 3)
+        self.assertEqual(insp["contentions"][0]["title"], "Right knee condition")
+        self.assertIn("Knee and Lower Leg", insp["contentions"][0]["forms"])
+        self.assertTrue(insp["isSimulated"])
+
+        # 2. Test ESR creation
+        xml_file.file.seek(0)
+        pdf_file.file.seek(0)
+        created = create_esr(file=xml_file, files=[pdf_file], db=db, user=user)
+        self.assertIn("esrId", created)
+
+        # Check intake view
+        esr_id = created["esrId"]
+        state = created["state"]
+        view = state["intake"]["viewsByEsrId"][esr_id]
+        va_inst = view["vaInstructions"]
+        self.assertEqual(va_inst["claimantName"], "Emerson Q Example")
+        self.assertEqual(va_inst["serviceBranch"], "Coast Guard")
+        self.assertEqual(va_inst["specialInstructions"], "")  # No fake text
+        self.assertEqual(len(va_inst["contentions"]), 3)
+        self.assertIn("Knee and Lower Leg", va_inst["contentions"][0]["dbqs"])
+        self.assertTrue(va_inst["isSimulated"])
+
 
 if __name__ == "__main__":
     unittest.main()

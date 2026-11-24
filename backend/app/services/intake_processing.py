@@ -21,44 +21,109 @@ MAX_FILE_BYTES = 5 * 1024 * 1024
 MAX_PAGES = 40
 MAX_SAMPLE_CHARS = 16000
 Category = Literal[
-    "service-treatment", "va-medical-records", "private-medical-records",
-    "hospital", "laboratory", "prior-examination", "imaging", "va-request", "other",
+    "examination-requests", "claims-and-applications", "service-treatment", "military-personnel",
+    "va-medical-records", "private-medical-records", "prior-examination", "laboratory",
+    "imaging", "diagnostic-tests", "hospital-surgical", "medication-prescription",
+    "medical-opinions", "health-assessments", "authorization-consent", "lay-witness",
+    "representation", "decisions-appeals", "insurance-financial", "administrative-correspondence",
+    "other", "va-request", "hospital",
 ]
+
 KEYWORDS = {
-    "va-request": (
-        "exam scheduling request", "examination request", "esr intake cover", "esr:", "intake cover",
+    "examination-requests": (
+        "exam scheduling request", "examination request", "esr intake cover", "esr:",
+        "schedulingrequestuniqueidentifier", "attachment f", "exam management",
+        "special instructions", "va instructions", "exam request", "esr_request"
+    ),
+    "claims-and-applications": (
+        "21-526ez", "21-526", "va form 21-526", "application for disability compensation",
+        "claim for compensation", "disability benefit claim", "supplemental claim",
+        "higher-level review", "20-0995", "20-0996", "10182", "compensation claim"
     ),
     "service-treatment": (
-        "service treatment record", "service clinic visit", "service treatment", "military medical",
-        "active duty", "enlistment", "separation physical", "str", "defense health", "armed forces", "dd-214",
+        "service treatment record", "service clinic visit", "service treatment",
+        "military medical", "active duty", "sf-600", "sf 600", "standard form 600",
+        "chronological record of medical care", "battalion aid station", "sick call",
+        "armed forces medical", "defense health agency", "military health"
+    ),
+    "military-personnel": (
+        "dd 214", "dd-214", "certificate of release or discharge", "active duty service",
+        "enlistment contract", "military personnel file", "201 file", "service history",
+        "deployment record", "discharge orders", "ngb 22"
     ),
     "va-medical-records": (
         "va outpatient visit", "va medical", "vamc", "veterans affairs", "veterans health",
-        "progress note", "va clinic", "primary care", "va-style outpatient", "clinic note",
+        "cprs", "progress note", "va clinic", "primary care", "va-style outpatient",
+        "clinic note", "veterans health administration", "vha"
     ),
     "private-medical-records": (
         "private clinic consultation", "private medical", "civilian health", "community care",
-        "outpatient clinic", "attending physician", "private physician", "medical center", "community clinic",
-    ),
-    "hospital": (
-        "discharge summary", "hospital", "admit date", "discharge date", "admission", "inpatient", "operative report",
-    ),
-    "laboratory": (
-        "laboratory report", "laboratory", "specimen", "blood test", "urinalysis", "pathology", "lab report",
-        "cbc", "metabolic panel", "serology", "hematology", "lab findings", "hemoglobin", "platelets",
+        "outpatient clinic", "attending physician", "private physician", "medical center",
+        "community clinic", "civilian doctor", "private consultation"
     ),
     "prior-examination": (
-        "prior dbq-like worksheet", "prior dbq", "prior examination", "disability benefits questionnaire",
-        "dbq", "c&p exam", "compensation and pension", "rating examination", "va form", "training worksheet",
+        "disability benefits questionnaire", "dbq", "c&p exam", "compensation and pension",
+        "rating examination", "prior examination", "prior dbq", "knee and lower leg",
+        "skin diseases dbq", "c&p disability examination", "training worksheet"
+    ),
+    "laboratory": (
+        "laboratory report", "laboratory", "specimen", "blood test", "urinalysis",
+        "pathology report", "lab report", "cbc", "complete blood count", "metabolic panel",
+        "serology", "hematology", "lab findings", "hemoglobin", "platelets"
     ),
     "imaging": (
-        "diagnostic imaging report", "radiology", "x-ray", "magnetic resonance", "imaging report",
-        "mri", "ct scan", "ultrasound", "computed tomography", "radiograph", "diagnostic imaging", "radiology report",
+        "diagnostic imaging report", "radiology", "x-ray", "magnetic resonance",
+        "imaging report", "mri", "ct scan", "ultrasound", "computed tomography",
+        "radiograph", "diagnostic imaging", "radiology report", "sonogram"
+    ),
+    "diagnostic-tests": (
+        "audiogram", "audiology evaluation", "audiometric", "pure tone threshold",
+        "speech reception", "hearing test", "ecg", "ekg", "electrocardiogram",
+        "pulmonary function test", "pft", "spirometry", "nerve conduction", "emg"
+    ),
+    "hospital-surgical": (
+        "discharge summary", "hospital", "admit date", "discharge date", "admission",
+        "inpatient", "operative report", "surgical procedure", "post-anesthesia", "pacu"
+    ),
+    "medication-prescription": (
+        "medication history", "prescription", "pharmacy record", "medication list",
+        "active medications", "dispensed medication", "drug profile"
+    ),
+    "medical-opinions": (
+        "nexus letter", "medical opinion", "independent medical opinion", "imo",
+        "service connection opinion", "etiology opinion", "at least as likely as not"
+    ),
+    "health-assessments": (
+        "separation health assessment", "sha part a", "sha part b", "dd form 2807",
+        "dd form 2808", "periodic health assessment", "pha", "post-deployment health"
+    ),
+    "authorization-consent": (
+        "21-4142", "21-4142a", "va form 21-4142", "authorization to disclose information",
+        "release of medical records", "consent to release", "general medical record release"
+    ),
+    "lay-witness": (
+        "21-10210", "va form 21-10210", "lay/witness statement", "lay statement",
+        "witness statement", "buddy statement", "statement in support of claim"
+    ),
+    "representation": (
+        "21-22", "21-22a", "va form 21-22", "appointment of veterans service organization",
+        "appointment of individual as claimant", "power of attorney", "vso representative"
+    ),
+    "decisions-appeals": (
+        "rating decision", "board of veterans appeals", "bva decision", "remand order",
+        "higher-level review decision", "decision narrative", "code sheet", "statement of the case"
+    ),
+    "insurance-financial": (
+        "explanation of benefits", "eob", "this is not a bill", "subscriber number",
+        "medical billing", "cms-1500", "ub-04", "patient responsibility", "allowed amount"
+    ),
+    "administrative-correspondence": (
+        "duty to assist", "5103 notice", "va letter", "notification letter",
+        "development letter", "evidence request letter", "administrative correspondence"
     ),
     "other": (
-        "audiology evaluation", "unknown handwritten-style note", "unrelated patient clinical note",
-        "unreadable blurred scan", "handwritten-style note", "audiology",
-    ),
+        "other", "general supporting document", "miscellaneous"
+    )
 }
 
 
@@ -276,126 +341,229 @@ def azure_review_completion(schema_name: str, schema: dict, instructions: str, s
         raise DocumentProcessingError("The AI review could not be generated. Try again later.") from exc
 
 
+def derive_document_title(filename: str, sample_text: str, category: str) -> str:
+    comb = (filename + " " + sample_text[:1500]).lower()
+    
+    if "526ez" in comb or "21-526" in comb:
+        return "Application for Disability Compensation (VA Form 21-526EZ)"
+    if "sf 600" in comb or "sf_600" in comb or "sf-600" in comb or "standard form 600" in comb:
+        return "Chronological Record of Medical Care (SF 600)"
+    if "sha part a" in comb or "separation health assessment" in comb:
+        return "Separation Health Assessment (Part A)"
+    if "21-10210" in comb:
+        return "Lay / Witness Statement (VA Form 21-10210)"
+    if "21-22a" in comb:
+        return "Appointment of Individual as Claimant's Representative (VA Form 21-22a)"
+    if "21-22" in comb:
+        return "Appointment of Veterans Service Organization (VA Form 21-22)"
+    if "21-4142a" in comb:
+        return "General Medical Record Release (VA Form 21-4142a)"
+    if "21-4142" in comb:
+        return "Authorization to Disclose Information (VA Form 21-4142)"
+    if "eob" in comb or "explanation of benefits" in comb:
+        return "Explanation of Benefits (CMS EOB)"
+    if "dd 214" in comb or "dd-214" in comb:
+        return "Certificate of Release or Discharge from Active Duty (DD 214)"
+    if "knee" in comb and ("dbq" in comb or "disability benefits questionnaire" in comb):
+        return "Knee and Lower Leg Disability Benefits Questionnaire"
+    if "skin" in comb and ("dbq" in comb or "disability benefits questionnaire" in comb):
+        return "Skin Diseases Disability Benefits Questionnaire"
+    if "dbq" in comb or "disability benefits questionnaire" in comb:
+        match = re.search(r"([A-Za-z\s]+)\s+disability\s+benefits\s+questionnaire", sample_text, re.IGNORECASE)
+        if match and len(match.group(1).strip()) < 40:
+            return f"{match.group(1).strip().title()} DBQ"
+        return "Disability Benefits Questionnaire"
+    if "discharge summary" in comb:
+        return "Hospital Discharge Summary"
+    if "operative report" in comb:
+        return "Operative Report"
+    if "radiology" in comb or "x-ray" in comb or "mri" in comb or "ct scan" in comb:
+        return "Diagnostic Imaging Report"
+    if "audiogram" in comb or "audiology" in comb:
+        return "Audiology & Hearing Evaluation Report"
+    if "lab report" in comb or "laboratory" in comb:
+        return "Laboratory Examination Report"
+    if "esr" in comb or "exam scheduling request" in comb:
+        return "VA Examination Scheduling Request (ESR)"
+        
+    clean_fn = re.sub(r"[-_]synthetic[-_]test.*$", "", filename, flags=re.IGNORECASE)
+    clean_fn = re.sub(r"\.[^.]+$", "", clean_fn).replace("_", " ").strip().title()
+    return clean_fn or "Medical Evidence Document"
+
+
 def classify_page_text(text: str, title: str = "") -> str:
-    lower_s = text.lower()
-    title_l = title.lower()
-    if "esr intake cover" in title_l or "esr intake cover" in lower_s:
-        return "va-request"
-    if "discharge summary" in title_l:
-        return "hospital"
-    if "audiology" in title_l or "unknown" in title_l or "unrelated patient" in title_l:
-        return "other"
-    highest = 0
-    best_cat = "other"
+    comb = (title + " " + text).lower()
+    if "esr" in comb or "exam scheduling request" in comb or "attachment f" in comb:
+        return "examination-requests"
+    if "sha part a" in comb or "separation health assessment" in comb:
+        return "health-assessments"
+    if "526ez" in comb or "21-526" in comb:
+        return "claims-and-applications"
+    if "sf 600" in comb or "sf-600" in comb or "sf_600" in comb or "standard form 600" in comb:
+        return "service-treatment"
+    if "21-10210" in comb or "lay/witness" in comb or "lay statement" in comb or "buddy statement" in comb:
+        return "lay-witness"
+    if "21-22" in comb or "appointment of veterans service organization" in comb:
+        return "representation"
+    if "21-4142" in comb or "authorization to disclose" in comb:
+        return "authorization-consent"
+    if "eob" in comb or "explanation of benefits" in comb:
+        return "insurance-financial"
+    if "dd 214" in comb or "dd-214" in comb:
+        return "military-personnel"
+    if "dbq" in comb or "disability benefits questionnaire" in comb:
+        return "prior-examination"
+    if "discharge summary" in comb:
+        return "hospital-surgical"
+
+    # Score against keywords
+    scores = {}
     for cat, terms in KEYWORDS.items():
-        score = sum(term in lower_s for term in terms) * 2 + sum(term in title_l for term in terms) * 5
-        if score > highest and score >= 1:
-            highest = score
-            best_cat = cat
-    return best_cat
+        s = sum(5 if term in title.lower() else (2 if len(term) > 6 and term in comb else 1) for term in terms if term in comb)
+        if s > 0:
+            scores[cat] = s
+    if not scores:
+        return "other"
+    return max(scores, key=scores.get)
+
+
+INTERNAL_SECTION_PATTERNS = re.compile(
+    r"^(?:"
+    r"section\s+[0-9ivx]+|"
+    r"part\s+[a-z0-9]+|"
+    r"diagnosis|diagnoses|medical history|treatment|symptoms|findings|"
+    r"ankylosis|gout|eczema|hearing loss|tinnitus|photochemotherapy|"
+    r"indicate length|does the veteran|what the evidence|how va determines|"
+    r"va form|standard form|sf\s*600|form\s*21-|omb control|omb approved|"
+    r"page\s+\d+|p\.\s*\d+|social security|veteran's social|where to send|"
+    r"change of address|direct deposit|respondent burden|evidence tables|"
+    r"synthetic test|evaluation\s*\||this is not a bill|explanation of benefits|"
+    r"instructions to|privacy act statement|authority:|remarks|notes|signature"
+    r")",
+    re.IGNORECASE
+)
+
+STANDALONE_DOCUMENT_HEADERS = (
+    "service treatment record", "service clinic visit", "va outpatient visit",
+    "private clinic consultation", "laboratory report", "diagnostic imaging report",
+    "audiology evaluation", "prior dbq", "discharge summary",
+    "handwritten-style note", "unrelated patient clinical note",
+    "scanned clinic note", "unreadable blurred scan",
+)
 
 
 def detect_sections(pages: dict[int, str], filename: str = "", expected_claimant: str | None = None) -> list[dict]:
-    """Identify individual clinical reports / sections inside combined multi-page documents."""
+    """
+    Identify individual clinical reports / documents inside uploaded files.
+    Continuous multi-page forms (DBQs, 21-526EZ, SHA, SF-600, etc.) are preserved
+    as single logical documents. Internal headings, diagnosis sections, questionnaires,
+    page headers and footers do not trigger document splitting.
+    """
     if not pages:
         return []
-    
+
+    sorted_pages = sorted(pages.keys())
+    min_page = sorted_pages[0]
+    max_page = sorted_pages[-1]
+
+    # Combine text from pages to determine overarching document category
+    full_sample = " ".join(pages.get(p, "")[:2000] for p in sorted_pages[:4]).lower()
+    fn_lower = filename.lower()
+    overall_cat = classify_page_text(full_sample, filename)
+
+    is_continuous_form = any(k in fn_lower or k in full_sample for k in (
+        "526ez", "21-526", "21-10210", "21-22", "21-4142", "sha part a",
+        "separation health assessment", "knee and lower leg", "skin diseases",
+        "sf_600", "sf-600", "sf 600", "explanation of benefits", "cms_eob"
+    ))
+
+    boundaries = [min_page]
+    BOUNDARY_MARKERS = re.compile(
+        r"===\s*DOCUMENT\s+BOUNDARY\s*===|"
+        r"DOCUMENT\s+\d+\s+OF\s+\d+|"
+        r"BEGIN\s+NEW\s+DOCUMENT",
+        re.IGNORECASE
+    )
+
+    was_unreadable = len(clean(pages[min_page])) < 10
+    current_cat = overall_cat
+
+    for p in sorted_pages[1:]:
+        text = pages.get(p, "").strip()
+        cleaned = clean(text)
+        is_unreadable = len(cleaned) < 10
+        lines = [line.strip() for line in text.split("\n") if line.strip() and not any(b in line.lower() for b in ("synthetic", "ocr", "page "))]
+        first_line = lines[0] if lines else ""
+        first_line_lower = first_line.lower()
+
+        if BOUNDARY_MARKERS.search(text):
+            boundaries.append(p)
+            current_cat = classify_page_text(text, filename)
+            was_unreadable = is_unreadable
+            continue
+
+        if is_continuous_form:
+            continue
+
+        if is_unreadable != was_unreadable:
+            boundaries.append(p)
+            was_unreadable = is_unreadable
+            current_cat = "other" if is_unreadable else classify_page_text(text, filename)
+            continue
+
+        has_standalone_header = any(h in first_line_lower or (len(lines) > 1 and h in lines[1].lower()) for h in STANDALONE_DOCUMENT_HEADERS)
+        page_cat = classify_page_text(text, filename)
+
+        if has_standalone_header:
+            boundaries.append(p)
+            current_cat = page_cat
+        elif page_cat != "other" and page_cat != current_cat and not INTERNAL_SECTION_PATTERNS.match(first_line):
+            boundaries.append(p)
+            current_cat = page_cat
+
     sections = []
-    current_sec = None
-    
-    def is_banner(line: str) -> bool:
-        l = line.lower()
-        return any(b in l for b in ("synthetic test data", "mde-ng ocr", "evaluation | synthetic", "page "))
-    
-    for page_num in sorted(pages.keys()):
-        raw_text = pages[page_num]
-        cleaned = clean(raw_text)
-        
-        # Check first substantive lines for candidate title
-        lines = [line.strip() for line in raw_text.split("\n") if line.strip() and not is_banner(line)]
-        candidate_title = lines[0] if lines else ""
-        lower_title = candidate_title.lower()
-        
-        # Candidate category for page
-        page_cat = classify_page_text(cleaned, candidate_title)
-        
-        # Determine if this page starts a new report
-        starts_new = False
-        if current_sec is None:
-            starts_new = True
-        else:
-            known_headers = (
-                "esr intake cover", "service treatment record", "va outpatient visit",
-                "private clinic consultation", "laboratory report", "diagnostic imaging report",
-                "audiology evaluation", "prior dbq", "worksheet", "discharge summary",
-                "handwritten-style note", "unrelated patient clinical note", "clinical note",
-                "radiology report", "pathology report", "progress note", "operative report",
-                "scanned clinic note", "unreadable blurred scan",
-            )
-            has_report_header = any(h in lower_title for h in known_headers)
-            
-            # Check if patient name changed
-            patient_match = re.search(r"patient\s*:\s*([^|\n]+)", raw_text, re.IGNORECASE)
-            cur_patient = current_sec.get("patient")
-            new_patient = patient_match.group(1).strip() if patient_match else None
-            patient_changed = bool(cur_patient and new_patient and cur_patient.lower() != new_patient.lower())
-            
-            # Transition between text and unreadable/image-only
-            is_unreadable = len(cleaned) < 10
-            was_unreadable = current_sec.get("unreadable", False)
-            
-            # Category change
-            cat_changed = page_cat != "other" and page_cat != current_sec.get("category")
-            
-            if has_report_header or patient_changed or (is_unreadable != was_unreadable) or cat_changed:
-                starts_new = True
-                
-        if starts_new:
-            if current_sec is not None:
-                sections.append(current_sec)
-            
-            patient_match = re.search(r"patient\s*:\s*([^|\n]+)", raw_text, re.IGNORECASE)
-            found_patient = patient_match.group(1).strip() if patient_match else None
-            
-            title = candidate_title or (f"Scanned Page {page_num}" if len(cleaned) < 10 else f"Section {len(sections)+1}")
-            if len(cleaned) < 10:
-                title = "Unreadable Blurred Scan"
-            elif "scanned clinic note" in cleaned.lower():
-                title = "Scanned Clinic Note"
-                page_cat = "va-medical-records"
-                
-            current_sec = {
-                "sectionId": f"sec-{len(sections)+1}",
-                "title": title,
-                "category": page_cat,
-                "startPage": page_num,
-                "endPage": page_num,
-                "pageCount": 1,
-                "patient": found_patient,
-                "pages": [page_num],
-                "unreadable": len(cleaned) < 10,
-                "summary": cleaned[:240] if cleaned else title,
-            }
-        else:
-            current_sec["endPage"] = page_num
-            current_sec["pageCount"] = current_sec["endPage"] - current_sec["startPage"] + 1
-            current_sec["pages"].append(page_num)
-            if not current_sec["summary"] and cleaned:
-                current_sec["summary"] = cleaned[:240]
-                
-    if current_sec is not None:
-        sections.append(current_sec)
-        
-    return sections
+    for idx, start_p in enumerate(boundaries):
+        end_p = (boundaries[idx + 1] - 1) if (idx + 1 < len(boundaries)) else max_page
+        sec_pages = [p for p in sorted_pages if start_p <= p <= end_p]
+        if not sec_pages:
+            continue
+
+        sec_text = " ".join(pages.get(p, "") for p in sec_pages)
+        cleaned_sec = clean(sec_text)
+        sec_cat = classify_page_text(sec_text[:3000], filename) if len(boundaries) > 1 else overall_cat
+        candidate_title = derive_document_title(filename, sec_text, sec_cat)
+
+        sections.append({
+            "sectionId": f"sec-{len(sections)+1}",
+            "title": candidate_title,
+            "category": sec_cat,
+            "startPage": start_p,
+            "endPage": end_p,
+            "pageCount": len(sec_pages),
+            "pages": sec_pages,
+            "unreadable": len(cleaned_sec) < 10,
+            "summary": cleaned_sec[:300] if cleaned_sec else candidate_title,
+        })
+
+    return [s for s in sections if s.get("pageCount", 0) > 0 and s.get("pages")]
 
 
 def check_claimant_match(sample: list[dict], expected_claimant: str | None) -> str:
     if not expected_claimant or expected_claimant.lower() in ("claimant not provided", "synthetic intake claimant", "intake claimant"):
         return "aligned"
     combined = " ".join(p.get("text", "").lower() for p in sample)
-    match = re.search(r"(?:patient|claimant|veteran|service member)\s*:\s*([A-Za-z]+,\s*[A-Za-z]+|[A-Za-z]+\s+[A-Za-z]+)", combined)
+    match = re.search(r"(?:patient|claimant|veteran|service member)(?:\s*name)?\s*[:=]\s*([A-Za-z]+,\s*[A-Za-z]+|[A-Za-z]+\s+[A-Za-z]+)", combined)
     if match:
         found_name = match.group(1).lower().strip()
+        # Disregard form label noise, blank template indicators, or instructional text
+        ignored_phrases = (
+            "social security", "date of", "dob", "ssn", "signature", "none", "blank", "unfilled",
+            "date received", "please complete", "first name", "last name", "middle", "instructions",
+            "print name", "telephone", "phone", "address", "city", "state", "zip", "relationship",
+            "statement", "certification", "information", "provider", "physician", "doctor"
+        )
+        if any(b in found_name for b in ignored_phrases):
+            return "aligned"
         parts = [p.lower().strip().replace(".", "") for p in re.split(r"[,\s]+", expected_claimant) if len(p.strip()) > 2]
         if parts and not any(part in found_name for part in parts):
             return "mismatch"
@@ -622,16 +790,18 @@ def node_classify_langchain(state: IntakeWorkflowState) -> dict:
                 provider = prov
             
             title_l = sec["title"].lower()
-            if "esr intake cover" in title_l:
-                category = "va-request"
+            if "esr intake cover" in title_l or "esr" in title_l:
+                category = "examination-requests"
             elif "discharge summary" in title_l:
-                category = "hospital"
+                category = "hospital-surgical"
             elif "scanned clinic note" in title_l:
                 category = "va-medical-records"
-            elif "audiology" in title_l or "unknown" in title_l:
-                category = "other"
             else:
-                category = suggestion.category
+                category = sec.get("category") or suggestion.category
+                if category == "va-request":
+                    category = "examination-requests"
+                elif category == "hospital":
+                    category = "hospital-surgical"
                 
             sec["category"] = category
             sec["summary"] = suggestion.summary or cleaned_sec[:240]
@@ -745,8 +915,8 @@ def node_validate_quality(state: IntakeWorkflowState) -> dict:
             issues.append("Claimant mismatch: identifies different patient in text")
         if readability == 0:
             issues.append("Unreadable scanned content: OCR confidence below threshold")
-        elif sec.get("confidence", 100) < 75 or sec.get("category") == "other":
-            issues.append("Uncertain classification: staff verification required")
+        elif sec.get("confidence", 100) < 50 and is_unreadable:
+            issues.append("Unreadable scanned content: staff verification required")
 
         needs_review = bool(issues)
         sec["isDuplicate"] = is_dup

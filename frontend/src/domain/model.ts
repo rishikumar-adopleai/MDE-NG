@@ -675,6 +675,7 @@ export interface IntakeWorkspaceView {
     missingDocuments?: { id: string; title: string; expectedCategory: string; required?: boolean }[];
     categorizedCounts?: Record<string, number>;
     aiOrganizer?: AiOrganizerSummary;
+    vaInstructions?: VaInstructionsSummary;
     qualityRate?: number;
     receiptReady: boolean;
     canAttach: boolean;
@@ -685,6 +686,38 @@ export interface IntakeWorkspaceView {
     queueLabel: string;
     steps: number;
   }>;
+}
+
+export interface VaInstructionsSummary {
+  specialInstructions: string;
+  serviceBranch: string;
+  claimantName: string;
+  claimIdentifier: string;
+  benefitProgram: string;
+  priorityHandling: string;
+  requestedDbqs: string[];
+  contentionCount: number;
+  contentions: { title: string; status: string; dbqs?: string[] }[];
+  expedited: boolean;
+  isSimulated?: boolean;
+}
+
+export interface EsrInspectionResult {
+  claimantName: string;
+  esrReference: string;
+  serviceBranch: string;
+  benefitProgram: string;
+  city: string;
+  stateCode: string;
+  contentions: { title: string; classification?: string; forms?: string[] }[];
+  specialInstructions: string;
+  fileType: string;
+  fileSize: number;
+  pageCount?: number;
+  isDuplicate: boolean;
+  existingEsrId?: string | null;
+  duplicateReason?: string | null;
+  isSimulated?: boolean;
 }
 
 export interface TriagePlan {
@@ -706,6 +739,9 @@ export interface TriageWorkspaceView {
     awaitingResponse: boolean;
     pathwaysByExam: Record<string, Modality[]>;
     initialPlan: TriagePlan;
+    specialInstructions?: string;
+    serviceBranch?: string;
+    isSimulated?: boolean;
   }[];
   examChoices: {
     code: string;

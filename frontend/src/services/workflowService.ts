@@ -122,14 +122,30 @@ export function recordDiagnosticException(state: WorkspaceState, orderId: string
   return refreshWorkItems(next, now);
 }
 
-export function reviewIntakeException(state: WorkspaceState, exceptionId: EntityId, disposition: 'resolved' | 'escalated', resolution: string) {
+export function reviewIntakeException(state: WorkspaceState, exceptionId: EntityId, disposition: 'resolved' | 'escalated' | 'excluded', resolution: string) {
   const current = state.intakeExceptionsById[exceptionId];
   if (!current) throw new WorkflowRuleError('The selected intake exception is no longer available.');
   if (!resolution.trim()) throw new WorkflowRuleError('Add a note describing the review or escalation.');
   const now = nowIso();
-  const next = copyMaps(state, ['intakeExceptionsById', 'activitiesById']);
-  next.intakeExceptionsById[exceptionId] = update(current, { status: disposition, resolution: resolution.trim() }, now);
-  changedStatus(next, { esrId: current.esrId, entityId: exceptionId, entityType: current.documentId ? 'evidence-document' : 'esr', action: disposition === 'resolved' ? 'intake-exception-resolved' : 'intake-exception-escalated', rationale: resolution.trim() }, current.status, disposition, now);
+  const next = copyMaps(state, ['intakeExceptionsById', 'activitiesById', 'evidenceDocumentsById', 'esrsById']);
+  const finalStatus = disposition === 'excluded' ? 'resolved' : disposition;
+  next.intakeExceptionsById[exceptionId] = update(current, { status: finalStatus, resolution: resolution.trim() }, now);
+  if (disposition === 'excluded' && current.documentId && current.esrId) {
+    const esr = next.esrsById[current.esrId];
+    if (esr) {
+      next.esrsById[current.esrId] = update(esr, { evidenceDocumentIds: esr.evidenceDocumentIds.filter(id => id !== current.documentId) }, now);
+    }
+    const doc = next.evidenceDocumentsById[current.documentId];
+    if (doc) {
+      next.evidenceDocumentsById[current.documentId] = update(doc, { classificationStatus: 'excluded' }, now);
+    }
+  } else if (disposition === 'resolved' && current.documentId) {
+    const doc = next.evidenceDocumentsById[current.documentId];
+    if (doc) {
+      next.evidenceDocumentsById[current.documentId] = update(doc, { classificationStatus: 'indexed' }, now);
+    }
+  }
+  changedStatus(next, { esrId: current.esrId, entityId: exceptionId, entityType: current.documentId ? 'evidence-document' : 'esr', action: disposition === 'escalated' ? 'intake-exception-escalated' : 'intake-exception-resolved', rationale: resolution.trim() }, current.status, finalStatus, now);
   return refreshWorkItems(next, now);
 }
 

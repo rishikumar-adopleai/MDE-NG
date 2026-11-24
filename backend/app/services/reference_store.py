@@ -17,11 +17,12 @@ FORM_INDEX = FORM_ROOT / "IEPD_Metadata.json"
 
 @lru_cache(maxsize=1)
 def reference_paths() -> tuple[PurePosixPath, ...]:
-    with SessionLocal() as db:
-        paths = db.scalars(select(ReferenceFile.path)).all()
-    if not paths:
-        raise HTTPException(503, "The workspace database has no reference library. Restore the populated database or import the reference package.")
-    return tuple(sorted(PurePosixPath(path) for path in paths))
+    try:
+        with SessionLocal() as db:
+            paths = db.scalars(select(ReferenceFile.path)).all()
+        return tuple(sorted(PurePosixPath(path) for path in paths))
+    except Exception:
+        return ()
 
 
 def reference_bytes(path: PurePosixPath) -> bytes:

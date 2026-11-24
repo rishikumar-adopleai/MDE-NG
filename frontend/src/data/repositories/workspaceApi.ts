@@ -1,5 +1,5 @@
-import type { AIStageReview, DocumentReviewDecision, IntakeWorkspaceView, StageKey, TriageWorkspaceView, WorkspaceState } from '../../domain/model';
-export type { AIStageReview } from '../../domain/model';
+import type { AIStageReview, DocumentReviewDecision, EsrInspectionResult, IntakeWorkspaceView, StageKey, TriageWorkspaceView, WorkspaceState } from '../../domain/model';
+export type { AIStageReview, EsrInspectionResult } from '../../domain/model';
 
 export type WorkspacePayload = WorkspaceState & { intake?: IntakeWorkspaceView; triage?: TriageWorkspaceView };
 
@@ -68,6 +68,9 @@ export const receiveIntakeSample = (scenario: string) =>
   request<{ esrId: string; state: WorkspacePayload }>(`/intake/exam-management/examples/${encodeURIComponent(scenario)}`, {
     method: 'POST',
   });
+
+export const inspectIntakeEsr = (body: FormData) =>
+  request<EsrInspectionResult>('/intake/esrs/inspect', { method: 'POST', body });
 
 export interface ExchangeEvent {
   id: string; title: string; scenario: string; claimant: string; at: string;

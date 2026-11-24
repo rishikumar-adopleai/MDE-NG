@@ -97,6 +97,27 @@ function PlanForm({ row, choices, item, documents, onApproval }: {
   };
 
   return <>
+    {row.specialInstructions && (
+      <div className="triage-va-instructions" role="region" aria-label="VA Instructions from Intake">
+        <div className="triage-va-header">
+          <span className="triage-va-title"><strong>VA Request & Special Instructions</strong>{row.serviceBranch ? ` · ${row.serviceBranch}` : ''}</span>
+          <span className={`va-sim-badge ${row.isSimulated ? 'simulated' : 'live'}`}>
+            {row.isSimulated ? 'SIMULATED REQUEST' : 'OFFICIAL LIVE VA REQUEST'}
+          </span>
+        </div>
+        <p className="triage-va-text">{row.specialInstructions}</p>
+        {!!row.requestedDbqs?.length && (
+          <div className="triage-va-dbqs">
+            <span className="va-dbqs-label">Requested DBQ Worksheets:</span>
+            <div className="va-dbq-tags">
+              {row.requestedDbqs.map(dbq => (
+                <span key={dbq} className="va-dbq-tag">{dbq}</span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    )}
     <nav className="intake-sections" aria-label="Contention review sections">
       <button type="button" aria-pressed={section === 'evidence'} onClick={() => setSection('evidence')}><FileText size={16} />Evidence <span>{documents.length}</span></button>
       <button type="button" aria-pressed={section === 'plan'} onClick={() => setSection('plan')}><ClipboardList size={16} />Examination plan</button>

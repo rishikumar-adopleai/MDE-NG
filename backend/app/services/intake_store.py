@@ -11,8 +11,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.services.intake_common import example_claimant
 from app.models import OutboxJob
-from app.services.intake_examples import example_claimant
 from app.services.intake_processing import DocumentProcessingError, process_document
 from app.services.intake_view import READABLE_EVIDENCE_BLOCKER, has_intake_evidence, with_intake_views
 from app.services.workspace_store import get_state, save_next_state
@@ -89,15 +89,17 @@ def refresh_intake_work(state: dict, esr_id: str, now: str) -> None:
 
 
 def save_state(db: Session, state: dict, esr_id: str) -> dict:
+    from app.services.workspace_store import get_snapshot
+    snapshot = get_snapshot(db)
+    revision = snapshot.revision if snapshot else state.get("revision", 0)
     now = timestamp()
-    revision = state["revision"]
     refresh_intake_work(state, esr_id, now)
     state.update(revision=revision + 1, updatedAt=now)
     save_next_state(db, revision, state)
     return state
 
 
-def add_case(state: dict, name: str | None, titles: list[str], actor: str, now: str) -> dict:
+def add_case(state: dict, name: str | None, titles: list[str], actor: str, now: str, *, is_simulated: bool = True) -> dict:
     esr_id = f"esr-local-{uuid4().hex[:12]}"
     example = name is None
     if name is None:
@@ -108,11 +110,11 @@ def add_case(state: dict, name: str | None, titles: list[str], actor: str, now: 
     reference = f"LOCAL-AEP-{esr_id.removeprefix('esr-local-').upper()}"
     facility = next(iter(state["facilitiesById"].values()), {})
     state["veteransById"][veteran_id] = {
-        **record(veteran_id, now), "displayName": name,
+        **record(veteran_id, now), "displayName": name or "",
         "initials": initials,
-        "claimIdentifier": f"SYN-{esr_id[-12:].upper()}",
-        "serviceGroup": "Army", "homeFacilityId": facility.get("id", ""),
-        "city": facility.get("city", "Synthetic"), "stateCode": facility.get("stateCode", ""),
+        "claimIdentifier": f"SYN-{esr_id[-12:].upper()}" if is_simulated else esr_id.upper(),
+        "serviceGroup": "", "homeFacilityId": facility.get("id", ""),
+        "city": facility.get("city", "Synthetic" if is_simulated else ""), "stateCode": facility.get("stateCode", ""),
         "accessibilityNeeds": [],
     }
     contention_ids = []
@@ -129,6 +131,8 @@ def add_case(state: dict, name: str | None, titles: list[str], actor: str, now: 
         "dueAt": (datetime.now(UTC) + timedelta(days=21)).isoformat(),
         "contentionIds": contention_ids, "evidenceDocumentIds": [], "priority": "routine",
         "sourceReference": esr_id.upper(), "externalState": "not-enabled",
+        "specialInstructions": "",
+        "isSimulated": is_simulated,
         "receiptStatus": "received", "receiptReference": reference, "aepRecordedAt": now,
         "intakeStatus": "processing",
         "documentManifest": {
@@ -164,21 +168,49 @@ def add_case(state: dict, name: str | None, titles: list[str], actor: str, now: 
 def queue_document(db: Session, state: dict, esr: dict, filename: str, content: bytes, now: str) -> str:
     digest = hashlib.sha256(content).hexdigest()
     documents = state["evidenceDocumentsById"]
-    if any(documents.get(item, {}).get("sourceHash") == digest for item in esr["evidenceDocumentIds"]):
-        raise HTTPException(409, "This file is already linked to this ESR.")
+    existing_id = next((item for item in esr["evidenceDocumentIds"] if documents.get(item, {}).get("sourceHash") == digest), None)
 
     doc_id = f"doc-{uuid4()}"
+    existing_title = documents.get(existing_id, {}).get("title", "an existing document") if existing_id else None
+    is_duplicate = bool(existing_id)
+
     documents[doc_id] = {
-        **record(doc_id, now), "esrId": esr["id"], "title": filename, "category": "other",
-        "sourceReference": filename, "sourceHash": digest, "pageCount": 0,
-        "classifiedPageCount": 0, "unreadablePageCount": 0, "classificationStatus": "queued",
+        **record(doc_id, now),
+        "esrId": esr["id"],
+        "title": filename,
+        "category": documents.get(existing_id, {}).get("category", "other") if is_duplicate else "other",
+        "sourceReference": filename,
+        "sourceHash": digest,
+        "pageCount": documents.get(existing_id, {}).get("pageCount", 1) if is_duplicate else 0,
+        "classifiedPageCount": documents.get(existing_id, {}).get("classifiedPageCount", 1) if is_duplicate else 0,
+        "unreadablePageCount": 0,
+        "classificationStatus": "needs-human-review" if is_duplicate else "queued",
+        "isDuplicate": is_duplicate,
+        "duplicateOf": existing_title if is_duplicate else None,
         "contentionIds": list(esr["contentionIds"]),
-        "processing": {"provider": settings.intake_provider, "status": "queued"},
+        "processing": {"provider": settings.intake_provider, "status": "completed" if is_duplicate else "queued"},
     }
-    touch(esr, now, evidenceDocumentIds=[*esr["evidenceDocumentIds"], doc_id], intakeStatus="processing")
+    touch(esr, now, evidenceDocumentIds=[*esr["evidenceDocumentIds"], doc_id],
+          intakeStatus="requires-attention" if is_duplicate else "processing")
     for contention_id in esr["contentionIds"]:
         contention = state["contentionsById"][contention_id]
         touch(contention, now, evidenceDocumentIds=[*contention["evidenceDocumentIds"], doc_id])
+
+    if is_duplicate:
+        # Create an actionable exception for staff review as required by the Stage 1 specification
+        issue_id = f"issue-{doc_id}-duplicate"
+        state["intakeExceptionsById"][issue_id] = {
+            **record(issue_id, now),
+            "esrId": esr["id"],
+            "documentId": doc_id,
+            "title": f"Duplicate Document: {filename}",
+            "detail": f"File '{filename}' has an identical checksum (SHA-256) to '{existing_title}' already linked to this ESR. Staff review or exclusion required.",
+            "status": "open",
+            "kind": "duplicate-document",
+            "sourceReference": filename,
+        }
+        return doc_id
+
     veteran = state["veteransById"].get(esr.get("veteranId"), {})
     claimant_name = veteran.get("displayName")
     db.add(OutboxJob(id=doc_id.removeprefix("doc-"), task_name=TASK_NAME, status="queued", payload={
@@ -290,15 +322,6 @@ def finish_job(job_id: str, lease: str, document_id: str, result: dict) -> None:
                         "kind": "unreadable-pages",
                         "detail": f"Page {sec['startPage']} has no readable text layer or OCR confidence is below threshold. Upload readable copy or review manually.",
                     }
-                if sec.get("category") == "other" and not (sec.get("isDuplicate") or sec.get("wrongPatient") or sec.get("unreadable")):
-                    sec_issue_id = f"issue-{document_id}-{sec_id}-review"
-                    issues[sec_issue_id] = {
-                        **record(sec_issue_id, now), "esrId": esr["id"], "documentId": document_id,
-                        "title": f"Classification Review: {sec['title']} (p. {sec['startPage']})", "status": "open",
-                        "sourceReference": sec.get("sourceReference") or doc["sourceReference"],
-                        "kind": "metadata-incomplete",
-                        "detail": f"Page {sec['startPage']} ({sec['title']}) requires staff confirmation of medical category.",
-                    }
             pending = any(state["evidenceDocumentsById"][item]["classificationStatus"] in {"queued", "processing"}
                           for item in esr["evidenceDocumentIds"])
             touch(esr, now, intakeStatus="processing" if pending else "requires-attention")
@@ -370,11 +393,48 @@ def apply_intake_command(state: dict, action: str, args: list, actor: str) -> di
     elif action == "reviewIntakeException":
         if not issue or issue["status"] not in {"open", "escalated"}:
             raise HTTPException(422, "This exception has already been dispositioned.")
-        if len(args) != 3 or args[1] not in ("resolved", "escalated") or not isinstance(args[2], str) or not args[2].strip():
+        if len(args) != 3 or args[1] not in ("resolved", "escalated", "excluded") or not isinstance(args[2], str) or not args[2].strip():
             raise HTTPException(422, "Choose a disposition and enter a review note.")
-        touch(issue, now, status=args[1], resolution=args[2].strip()[:2000])
-        object_id = issue.get("documentId") or esr_id
-        event = f"intake-exception-{args[1]}"
+        
+        disposition = args[1]
+        note = args[2].strip()[:2000]
+        doc_id = issue.get("documentId")
+
+        if disposition == "excluded":
+            touch(issue, now, status="resolved", resolution=f"Excluded: {note}")
+            if doc_id:
+                if doc_id in esr.get("evidenceDocumentIds", []):
+                    esr["evidenceDocumentIds"] = [d for d in esr["evidenceDocumentIds"] if d != doc_id]
+                for cid in esr.get("contentionIds", []):
+                    contention = state["contentionsById"].get(cid)
+                    if contention and doc_id in contention.get("evidenceDocumentIds", []):
+                        contention["evidenceDocumentIds"] = [d for d in contention["evidenceDocumentIds"] if d != doc_id]
+                doc = state["evidenceDocumentsById"].get(doc_id)
+                if doc:
+                    touch(doc, now, classificationStatus="excluded", isExcluded=True, isDuplicate=False, duplicateOf=None)
+            object_id = doc_id or esr_id
+            event = "intake-exception-resolved"
+        elif disposition == "resolved":
+            touch(issue, now, status="resolved", resolution=note)
+            if doc_id:
+                doc = state["evidenceDocumentsById"].get(doc_id)
+                if doc:
+                    touch(doc, now, classificationStatus="indexed", isDuplicate=False, duplicateOf=None)
+                    if "quality" in doc and isinstance(doc["quality"], dict):
+                        doc["quality"]["isDuplicate"] = False
+                    if "sections" in doc and isinstance(doc["sections"], list):
+                        for sec in doc["sections"]:
+                            sec["isDuplicate"] = False
+                            sec["duplicateOf"] = None
+                            sec["actionRequired"] = False
+                            sec["status"] = "indexed"
+                            sec["issues"] = [i for i in sec.get("issues", []) if not i.lower().startswith("possible duplicate")]
+            object_id = doc_id or esr_id
+            event = "intake-exception-resolved"
+        else:
+            touch(issue, now, status="escalated", resolution=note)
+            object_id = doc_id or esr_id
+            event = "intake-exception-escalated"
     elif action == "completeDocumentProcessing":
         if not view["canProcessLegacy"]:
             raise HTTPException(422, "Uploaded documents are processed by the Intake worker.")

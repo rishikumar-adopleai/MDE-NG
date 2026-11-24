@@ -80,6 +80,15 @@ def with_triage_view(state: dict) -> dict:
             continue
         documents = linked_documents(state, item)
         awaiting_response = item["status"] == "clarification-required"
+        vet = state.get("veteransById", {}).get(esr.get("veteranId"), {})
+        is_sim = esr.get("isSimulated")
+        if is_sim is None:
+            is_sim = bool(
+                esr.get("id", "").startswith("esr-local")
+                or "syn" in esr.get("id", "").lower()
+                or "example" in (vet.get("displayName") or "").lower()
+                or "demo" in (vet.get("displayName") or "").lower()
+            )
         rows.append({
             "contentionId": item["id"], "esrId": item["esrId"], "priority": work["priority"],
             "documentIds": [doc["id"] for doc in documents],
@@ -88,6 +97,9 @@ def with_triage_view(state: dict) -> dict:
             "requestedDbqs": item.get("requestedDbqNames", []),
             "pathwaysByExam": {code: permitted_modalities(item, exam[4]) for code, exam in EXAM_CATALOG.items()},
             "initialPlan": initial_plan(item).model_dump(),
+            "specialInstructions": esr.get("specialInstructions") or "",
+            "serviceBranch": vet.get("serviceGroup") or "",
+            "isSimulated": is_sim,
         })
     return {**state, "triage": {"rows": rows, "examChoices": exam_choices()}}
 

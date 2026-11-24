@@ -1,6 +1,7 @@
+import re
 from collections import defaultdict
 
-from app.services.intake_examples import example_claimant, is_legacy_example
+from app.services.intake_common import example_claimant, is_legacy_example
 
 READABLE_DOCUMENT_STATES = {"indexed", "needs-human-review"}
 TRIAGE_ACTIVE_STATES = {"awaiting-review", "in-review", "clarification-required"}
@@ -137,42 +138,55 @@ def with_intake_views(state: dict) -> dict:
             cat_counts[doc.get("category", "other")] += 1
 
         # AI Document Organizer data
-        medical_docs = [d for d in documents if not d.get("administrativeOnly") and d.get("category") != "va-request"]
-        metadata_docs = [d for d in documents if d.get("administrativeOnly") or d.get("category") == "va-request"]
+        medical_docs = [d for d in documents if not d.get("administrativeOnly") and d.get("category") not in {"va-request", "examination-requests"}]
+        metadata_docs = [d for d in documents if d.get("administrativeOnly") or d.get("category") in {"va-request", "examination-requests"}]
 
         # Build Logical Document Segments as Primary Organization Units
         logical_medical_docs = []
         logical_metadata_docs = []
 
+        open_duplicate_exceptions = {
+            ex.get("documentId")
+            for ex in state.get("intakeExceptionsById", {}).values()
+            if ex.get("esrId") == esr_id and ex.get("kind") in {"duplicate-document", "duplicate"} and ex.get("status") in {"open", "escalated"}
+        }
+
         for d in documents:
-            is_meta = d.get("administrativeOnly") or d.get("category") == "va-request"
+            if d.get("classificationStatus") == "excluded" or d.get("isExcluded"):
+                continue
+            is_meta = d.get("administrativeOnly") or d.get("category") in {"va-request", "examination-requests"}
             sections = d.get("sections", [])
             if sections:
                 for sec in sections:
                     sec_cat = sec.get("category", d.get("category", "other"))
-                    sec_is_meta = sec_cat == "va-request" or is_meta
+                    if sec_cat == "va-request":
+                        sec_cat = "examination-requests"
+                    sec_is_meta = sec_cat == "examination-requests" or is_meta
+                    is_dup_sec = sec.get("isDuplicate", False) and (d["id"] in open_duplicate_exceptions or d.get("classificationStatus") == "needs-human-review")
+                    sec_issues = [i for i in sec.get("issues", []) if is_dup_sec or not i.lower().startswith("possible duplicate")]
+                    sec_action = (sec.get("actionRequired", False) or sec.get("status") == "needs-human-review" or d.get("classificationStatus") == "needs-human-review") and (is_dup_sec or not sec.get("isDuplicate"))
                     item = {
-                        "id": f"{d['id']}::{sec['sectionId']}",
+                        "id": f"{d['id']}::{sec['sectionId']}" if len(sections) > 1 else d["id"],
                         "parentDocumentId": d["id"],
                         "sectionId": sec["sectionId"],
                         "title": sec.get("title", d.get("title")),
                         "category": sec_cat,
                         "startPage": sec.get("startPage", 1),
                         "endPage": sec.get("endPage", sec.get("startPage", 1)),
-                        "pageCount": sec.get("pageCount", 1),
-                        "sourceReference": sec.get("sourceReference") or f"{d.get('sourceReference', d.get('title'))} (p. {sec.get('startPage', 1)})",
+                        "pageCount": sec.get("pageCount", d.get("pageCount", 1)),
+                        "sourceReference": sec.get("sourceReference") or f"{d.get('sourceReference', d.get('title'))} (pp. {sec.get('startPage', 1)}–{sec.get('endPage', 1)})",
                         "parentFileName": d.get("sourceReference", d.get("title", "")),
-                        "classificationStatus": sec.get("status", "indexed"),
+                        "classificationStatus": "indexed" if not sec_action and d.get("classificationStatus") != "needs-human-review" else sec.get("status", "indexed"),
                         "confidence": sec.get("confidence", 95),
                         "readabilityScore": sec.get("readabilityScore", 100),
                         "ocrApplied": sec.get("ocrApplied", False),
                         "ocrConfidence": sec.get("ocrConfidence", 95),
-                        "isDuplicate": sec.get("isDuplicate", False),
-                        "duplicateOf": sec.get("duplicateOf"),
+                        "isDuplicate": is_dup_sec,
+                        "duplicateOf": sec.get("duplicateOf") if is_dup_sec else None,
                         "claimantMatch": sec.get("claimantMatch", "aligned"),
                         "wrongPatient": sec.get("wrongPatient", False),
-                        "actionRequired": sec.get("actionRequired", False) or sec.get("status") == "needs-human-review",
-                        "issues": sec.get("issues", []),
+                        "actionRequired": sec_action,
+                        "issues": sec_issues,
                         "extractedData": sec.get("extractedData", {}),
                         "summary": sec.get("summary", ""),
                         "administrativeOnly": sec_is_meta,
@@ -182,6 +196,8 @@ def with_intake_views(state: dict) -> dict:
                     else:
                         logical_medical_docs.append(item)
             else:
+                is_doc_dup = (d.get("isDuplicate", False) or d["id"] in open_duplicate_exceptions) and (d["id"] in open_duplicate_exceptions or d.get("classificationStatus") == "needs-human-review")
+                doc_action = (d.get("classificationStatus") == "needs-human-review" or is_doc_dup)
                 item = {
                     "id": d["id"],
                     "parentDocumentId": d["id"],
@@ -193,17 +209,17 @@ def with_intake_views(state: dict) -> dict:
                     "pageCount": d.get("pageCount", 1),
                     "sourceReference": d.get("sourceReference", d.get("title", "")),
                     "parentFileName": d.get("sourceReference", d.get("title", "")),
-                    "classificationStatus": d.get("classificationStatus", "indexed"),
+                    "classificationStatus": "indexed" if not doc_action else d.get("classificationStatus", "indexed"),
                     "confidence": 95,
                     "readabilityScore": (d.get("quality", {}) or {}).get("readabilityScore", 100),
                     "ocrApplied": (d.get("quality", {}) or {}).get("ocrApplied", False),
                     "ocrConfidence": (d.get("quality", {}) or {}).get("ocrConfidence", 100),
-                    "isDuplicate": False,
-                    "duplicateOf": None,
+                    "isDuplicate": is_doc_dup,
+                    "duplicateOf": d.get("duplicateOf") if is_doc_dup else None,
                     "claimantMatch": (d.get("quality", {}) or {}).get("claimantMatch", "aligned"),
                     "wrongPatient": (d.get("quality", {}) or {}).get("claimantMatch") == "mismatch",
-                    "actionRequired": d.get("classificationStatus") == "needs-human-review",
-                    "issues": [],
+                    "actionRequired": doc_action,
+                    "issues": [i for i in d.get("issues", []) if is_doc_dup or not i.lower().startswith("possible duplicate")],
                     "extractedData": d.get("extractedData", {}),
                     "summary": (d.get("processing", {}) or {}).get("summary", ""),
                     "administrativeOnly": is_meta,
@@ -213,14 +229,20 @@ def with_intake_views(state: dict) -> dict:
                 else:
                     logical_medical_docs.append(item)
 
-        # Duplicate detection by SHA-256 or segment duplicate flags
+        # Duplicate detection by SHA-256: count only redundant duplicate files that are still open/unreviewed
         duplicate_ids = set()
-        for doc_item in logical_medical_docs:
-            if doc_item.get("isDuplicate"):
-                duplicate_ids.add(doc_item["id"])
+        seen_shas = set()
         for d in documents:
+            if d.get("classificationStatus") == "excluded" or d.get("isExcluded"):
+                continue
             sha = d.get("sourceHash") or (d.get("quality", {}) or {}).get("sha256")
-            if sha and any(other.get("sourceHash") == sha and other["id"] != d["id"] for other in documents):
+            if sha:
+                if sha in seen_shas:
+                    if d["id"] in open_duplicate_exceptions or d.get("classificationStatus") == "needs-human-review":
+                        duplicate_ids.add(d["id"])
+                else:
+                    seen_shas.add(sha)
+            elif d.get("isDuplicate") and (d["id"] in open_duplicate_exceptions or d.get("classificationStatus") == "needs-human-review"):
                 duplicate_ids.add(d["id"])
 
         unreadable_docs = [item["id"] for item in logical_medical_docs if item.get("readabilityScore", 100) == 0]
@@ -229,13 +251,26 @@ def with_intake_views(state: dict) -> dict:
         action_required_docs = [item["id"] for item in logical_medical_docs if item.get("actionRequired")]
 
         CATEGORY_CONFIG = [
-            ("service-treatment", "Service Treatment Records"),
+            ("claims-and-applications", "Claims and Applications"),
+            ("service-treatment", "Service Treatment Records (STR)"),
+            ("military-personnel", "Military Personnel Records"),
             ("va-medical-records", "VA Medical Records"),
             ("private-medical-records", "Private Medical Records"),
-            ("laboratory", "Lab Reports"),
+            ("prior-examination", "Previous Examinations & DBQs"),
+            ("laboratory", "Laboratory Reports"),
             ("imaging", "Diagnostic Imaging"),
-            ("prior-examination", "Previous DBQs"),
-            ("other", "Other Documents"),
+            ("diagnostic-tests", "Diagnostic & Ancillary Tests"),
+            ("hospital-surgical", "Hospital & Surgical Records"),
+            ("medication-prescription", "Medication & Prescription Records"),
+            ("medical-opinions", "Medical Opinions"),
+            ("health-assessments", "Health Assessments"),
+            ("authorization-consent", "Authorization & Consent"),
+            ("lay-witness", "Lay & Witness Statements"),
+            ("representation", "Representation Documents"),
+            ("decisions-appeals", "Disability Decisions & Appeals"),
+            ("insurance-financial", "Insurance & Financial Records"),
+            ("administrative-correspondence", "Administrative Correspondence"),
+            ("other", "Others"),
         ]
 
         organizer_categories = []
@@ -281,6 +316,45 @@ def with_intake_views(state: dict) -> dict:
 
         quality_rate = round(readable_pages * 100 / max(1, page_count)) if page_count else 100
         timeline = sorted(activities[esr_id], key=lambda event: event["at"], reverse=True)[:10]
+
+        vet = state["veteransById"].get(esr.get("veteranId"), {})
+        contentions_list = [state["contentionsById"][cid] for cid in esr.get("contentionIds", []) if cid in state["contentionsById"]]
+        requested_dbqs = []
+        for c in contentions_list:
+            requested_dbqs.extend(c.get("requestedDbqNames", []))
+        if not requested_dbqs and contentions_list:
+            requested_dbqs = [c["title"] for c in contentions_list]
+
+        is_simulated = esr.get("isSimulated")
+        if is_simulated is None:
+            is_simulated = bool(
+                esr_id.startswith("esr-local")
+                or "syn" in esr_id.lower()
+                or "example" in (vet.get("displayName") or "").lower()
+                or "demo" in (vet.get("displayName") or "").lower()
+            )
+
+        va_instructions = {
+            "specialInstructions": esr.get("specialInstructions") or "",
+            "serviceBranch": vet.get("serviceGroup") or "",
+            "claimantName": vet.get("displayName") or esr.get("claimantName") or "",
+            "claimIdentifier": vet.get("claimIdentifier") or esr.get("sourceReference") or esr_id,
+            "benefitProgram": esr.get("examManagement", {}).get("program") or "",
+            "priorityHandling": (esr.get("priority") or "routine").upper(),
+            "requestedDbqs": list(dict.fromkeys(requested_dbqs)),
+            "contentionCount": len(contentions_list),
+            "contentions": [
+                {
+                    "title": c["title"],
+                    "status": c.get("status", "awaiting-review"),
+                    "dbqs": c.get("requestedDbqNames", []),
+                }
+                for c in contentions_list
+            ],
+            "expedited": esr.get("priority") in {"expedited", "critical", "terminal"},
+            "isSimulated": is_simulated,
+        }
+
         views[esr_id] = {
             "documentIds": [item["id"] for item in documents],
             "exceptionIds": [issue["id"] for issue in issues],
@@ -296,6 +370,7 @@ def with_intake_views(state: dict) -> dict:
             "missingDocuments": missing_docs,
             "categorizedCounts": dict(cat_counts),
             "aiOrganizer": ai_organizer,
+            "vaInstructions": va_instructions,
             "qualityRate": quality_rate,
             "receiptReady": receipt_ready, "canAttach": receipt_ready,
             "canProcessLegacy": receipt_ready and any(not item.get("processing") for item in pending),
