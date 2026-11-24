@@ -1,0 +1,204 @@
+.workspace-loading{min-height:100vh;display:grid;place-content:center;justify-items:center;gap:12px;color:#44536a;background:#f2f7f6;text-align:center}.workspace-loading svg{color:#3f8174}.workspace-loading b{font-size:18px}.workspace-loading span{font-size:12px;color:#6b788c}
+.storage-warning{margin:10px 18px 0;padding:10px 13px;display:flex;align-items:flex-start;gap:9px;border:1px solid #e8c776;border-radius:10px;background:#fff7df;color:#6e4b05;font-size:11px;line-height:1.45}.storage-warning svg{flex:none;margin-top:1px}.storage-warning b{margin-right:5px}
+.activity-backdrop{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:18px;background:#18243666;backdrop-filter:blur(3px)}.activity-dialog{width:min(760px,100%);max-height:min(82vh,820px);display:flex;flex-direction:column;overflow:hidden;border:1px solid #dce4ec;border-radius:18px;background:#fff;box-shadow:0 28px 90px #14223633}.activity-dialog>header{display:flex;align-items:center;justify-content:space-between;padding:18px 20px;border-bottom:1px solid #e7edf0}.activity-dialog>header small{color:#55736d;font-size:9px;font-weight:800;letter-spacing:.12em}.activity-dialog h2{margin:4px 0 0;color:#263c42;font-size:19px}.activity-dialog>p{margin:0;padding:12px 20px;border-bottom:1px solid #edf0f1;color:#697983;font-size:11px;line-height:1.5}.activity-list{overflow:auto;padding:10px 20px 18px}.activity-list article{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 14px;padding:12px 0;border-bottom:1px solid #edf0f1}.activity-list article>span{display:grid;gap:3px}.activity-list b{color:#2d434b;font-size:11px;text-transform:capitalize}.activity-list small,.activity-list time{color:#74828a;font-size:10px}.activity-list article>p{grid-column:1/-1;margin:2px 0 0;color:#50636b;font-size:10px;line-height:1.5}
+.case-record-summary{display:grid;gap:8px;margin:13px 0;padding:12px 0;border-top:1px solid #e6edf0;border-bottom:1px solid #e6edf0}.case-record-summary>b{color:#344d54;font-size:10px}.case-record-summary>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.case-record-summary>div>span:first-child{overflow:hidden;color:#5f7076;font-size:9px;text-overflow:ellipsis;white-space:nowrap}.case-record-summary .status{font-size:8px}
+.queue-pagination{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 12px;color:#75828a;font-size:9px}.queue-pagination>div{display:flex;gap:5px}.queue-pagination .btn{min-height:30px;padding:5px 9px;font-size:9px}
+.intake-workspace{grid-template-columns:minmax(220px,245px) minmax(0,1fr) minmax(270px,300px);grid-template-areas:"workflow workflow workflow" "queue processing events";align-items:start}.intake-workspace>.stage-flow{grid-area:workflow}.intake-workspace>.intake-queue{grid-area:queue}.intake-workspace>.intake-processing{grid-area:processing}.intake-workspace>.intake-events{grid-area:events}.intake-workspace>.work-panel{min-width:0;overflow:hidden;padding-bottom:12px}.intake-case-list{max-height:680px;overflow:auto}.intake-processing .intake-results{max-height:510px;overflow:auto}.intake-events>.panel-title{margin-bottom:10px}.intake-exception-list{margin:0 12px;display:grid;gap:9px}.intake-exception{display:block;padding:12px;border:1px solid #e0e9e8;border-radius:12px;background:#fff}.intake-exception.resolved{background:#f5faf7;border-color:#d7e9df}.intake-exception>div:first-child{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.intake-exception>div:first-child>b{color:#32494e;font-size:11px}.intake-exception>p{margin:7px 0;color:#617076;font-size:10px;line-height:1.5}.intake-exception>small{display:block;color:#71807f;font-size:9px}.intake-exception .field{margin:9px 0 0}.intake-exception .field textarea{min-height:58px}.intake-exception-actions{display:flex;align-items:center;justify-content:flex-start;gap:10px;margin-top:8px}.intake-exception-actions .btn{min-height:32px}.intake-event-timeline{display:grid;gap:8px;margin:14px 12px}.intake-event-timeline>div{display:flex;gap:8px;align-items:flex-start}.intake-event-timeline>div>span{color:#36816c}.intake-event-timeline p{display:grid;gap:2px;margin:0}.intake-event-timeline b{font-size:9px;color:#475a5d;text-transform:capitalize}.intake-event-timeline small{font-size:8px;color:#7c898a}.intake-handoff-note,.held-note,.confirmed-note,.external-status-note{display:flex;align-items:flex-start;gap:7px;margin:10px 12px;padding:10px;border:1px solid #dce9e4;border-radius:10px;background:#f4faf7;color:#42685d;font-size:9px;line-height:1.5}.intake-handoff-note svg,.held-note svg,.confirmed-note svg,.external-status-note svg{flex:none}.intake-handoff-note span,.confirmed-note span,.external-status-note span{min-width:0}
+.scheduling-grid{grid-template-columns:minmax(220px,245px) minmax(0,1fr) minmax(270px,310px)}.scheduling-queue,.examiner-match-panel,.appointment-detail-panel{min-width:0;padding-bottom:12px}.scheduling-queue>.case-list{max-height:720px;overflow:auto}.scheduling-filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:12px}.scheduling-filters .field{margin:0}.scheduling-match-summary{display:grid;gap:4px;margin:0 12px 10px;padding:9px;border-radius:9px;background:#f2f8f6;color:#3d7467;font-size:9px}.scheduling-match-summary>span{display:flex;gap:6px;align-items:center}.scheduling-match-summary>span svg{flex:none}.scheduling-match-summary small{color:#70817f;font-size:8px}.examiner-candidate-list{display:grid;gap:7px;padding:0 12px}.examiner-candidate-list>button{display:flex;align-items:center;gap:8px;width:100%;padding:9px;border:1px solid #e2e8ed;border-radius:10px;background:#fff;text-align:left}.examiner-candidate-list>button.selected{border-color:#6aa99a;background:#f1f8f6}.examiner-candidate-list>button>span:nth-child(2){display:grid;min-width:0;flex:1;gap:3px}.examiner-candidate-list b{color:#33494f;font-size:10px}.examiner-candidate-list small{display:flex;align-items:center;gap:3px;color:#738187;font-size:8px;line-height:1.4}.provider-avatar{flex:none}.slot-picker{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:8px;margin:12px;padding:10px;border:1px solid #dfe9e6;border-radius:11px;background:#f8fbfa}.slot-picker .field{margin:0}.slot-picker>.btn{min-height:38px}.slot-picker>small{grid-column:1/-1;color:#9c5d1e;font-size:9px}.scheduling-policy-note{display:flex;gap:7px;margin:12px;color:#617a73;font-size:9px;line-height:1.5}.scheduling-policy-note svg{flex:none;color:#397968}.appointment-list{display:grid;gap:7px;padding:10px}.appointment-list>button{display:grid;gap:5px;padding:9px;border:1px solid #e1e8ed;border-radius:10px;background:#fff;text-align:left}.appointment-list>button.selected{border-color:#71a99a;background:#f0f8f5}.appointment-list>button>span{display:flex;justify-content:space-between;align-items:center;gap:6px}.appointment-list b{font-size:9px;color:#3c5156}.appointment-list small{color:#74838a;font-size:8px;line-height:1.4}.appointment-history{display:grid;gap:7px;margin:10px 12px;padding:10px;border-top:1px solid #e6ecee;border-bottom:1px solid #e6ecee}.appointment-history>b{font-size:9px;color:#495d62}.appointment-history>div{display:grid;gap:2px}.appointment-history>div>span{font-size:8px;color:#48766d;text-transform:capitalize}.appointment-history small{color:#7b888d;font-size:8px;line-height:1.4}.outreach-panel,.appointment-management{display:grid;gap:7px;margin:10px 12px}.outreach-panel .field,.appointment-management .field{margin:0}.outreach-panel .field textarea{min-height:62px}.outreach-panel .btn,.appointment-management .btn{min-height:35px}.danger-text{color:#a13d37}.scheduling-grid .panel-title{margin-bottom:5px}
+.clinical-worklist{max-height:510px;overflow:auto}.clinical-record-summary{display:grid;gap:5px;margin:10px 12px;padding:10px;border-radius:9px;background:#f5f8fa}.clinical-record-summary>b{color:#465b62;font-size:9px}.clinical-record-summary>span{color:#76848a;font-size:8px;line-height:1.45}.clinical-grid .dbq-top small{display:block;margin-top:4px;color:#758187;font-size:9px}.clinical-grid .dbq-tabs{overflow:auto}.clinical-grid .dbq-tabs button{min-width:130px}.clinical-grid .save-state{white-space:nowrap}.clinical-grid .save-state.failed{color:#a63b35}.clinical-grid .save-state.saving{color:#a46b12}.clinical-grid .save-state.dirty{color:#a46b12}.clinical-grid .diagnostic-card{display:grid;gap:8px}.diagnostic-row{display:grid;gap:4px;padding:8px;border:1px solid #e0e7ed;border-radius:9px;background:#fff}.diagnostic-row>b{font-size:9px;color:#3d5159}.diagnostic-row>small{font-size:8px;color:#738088;line-height:1.4}.clinical-save-error{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:10px;padding:9px;border:1px solid #f0cbc6;border-radius:9px;background:#fff2f0;color:#9c352d;font-size:9px}.clinical-save-error button{border:0;background:none;color:#7a312b;font-size:9px;font-weight:700}
+.comparison-toolbar{align-items:end;gap:8px}.comparison-toolbar .field{margin:0;flex:1}.qa-version-badge{padding:8px 10px;border:1px solid #dce6e5;border-radius:8px;color:#54716c;background:#f5faf8;font-size:9px}.qa-dbq-values{display:grid;gap:7px;margin:12px 0}.qa-dbq-values>div{padding:9px;border:1px solid #e4e9ed;border-radius:9px;background:#fff}.qa-dbq-values dt{color:#718086;font-size:8px;text-transform:capitalize}.qa-dbq-values dd{margin:4px 0 0;color:#35484e;font-size:10px;line-height:1.5;white-space:pre-wrap}.qa-evidence-entry{margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid #e4eaed}.qa-evidence-entry h3{margin:6px 0}.qa-evidence-entry p{margin:4px 0 7px}.version-history{display:grid;gap:6px;margin-top:14px}.version-history>b{font-size:9px;color:#465d62}.version-history button{padding:7px;border:1px solid #e2e9ec;border-radius:7px;background:#fff;color:#50646a;font-size:8px;text-align:left}.qa-add-finding-toggle{display:flex;justify-content:flex-end;padding:0 12px}.qa-add-finding-form{display:grid;gap:8px;margin:10px 12px;padding:12px;border:1px solid #dce7e5;border-radius:11px;background:#f8fbfa}.qa-add-finding-form .field{margin:0}.qa-add-finding-form .btn{justify-self:start}.finding-row{display:grid;gap:4px;width:100%;margin:0;padding:9px;border:1px solid #e0e5ee;border-radius:9px;background:#fbfcff;text-align:left}.finding-row.selected{border-color:#8eaaa5;background:#f0f8f6}.finding-row>b{font-size:9px;color:#303a59}.finding-row small{font-size:8px;color:#717c90}.qa-validation-checks>.finding-row{margin-bottom:6px}.qa-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:7px;margin:10px 12px}.qa-actions .btn{min-height:35px}.qa-correction-state{display:flex;align-items:flex-start;gap:7px;margin:10px 12px;padding:10px;border:1px solid #eed5a8;border-radius:9px;background:#fff8e9;color:#80601c;font-size:9px;line-height:1.5}.qa-finding-history{display:grid;gap:5px;margin:10px;padding:10px;border-radius:9px;background:#f8fafb}.qa-finding-history>b{font-size:9px;color:#4c5f63}.qa-finding-history p{margin:0;color:#748185;font-size:8px;line-height:1.45}
+.delivery-grid{grid-template-columns:minmax(230px,260px) minmax(0,1fr) minmax(260px,310px)}.delivery-grid .package-rail,.delivery-grid .delivery-timeline-panel,.delivery-grid .delivery-assist{min-width:0;padding-bottom:12px}.delivery-grid .package-rail>.case-list{max-height:480px;overflow:auto}.package-picker{display:grid;gap:3px;width:calc(100% - 20px);margin:7px 10px;padding:9px;border:1px solid #e0e7eb;border-radius:9px;background:#fff;text-align:left}.package-picker.selected{border-color:#6aa99a;background:#f0f8f5}.package-picker b{color:#43585d;font-size:9px}.package-picker span,.package-picker small{color:#778489;font-size:8px;text-transform:capitalize}.delivery-grid .delivery-boundary-note{display:flex;align-items:flex-start;gap:7px;margin:10px;padding:10px;border:1px solid #dce8e5;border-radius:9px;background:#f4f9f7;color:#61766f;font-size:8px;line-height:1.5}.delivery-grid .delivery-boundary-note svg{flex:none}.delivery-grid .delivery-status-banner{margin:12px;padding:13px}.delivery-grid .delivery-status-banner h2{font-size:13px}.delivery-grid .delivery-status-banner p{font-size:9px;line-height:1.5}.delivery-grid .package-list{display:grid;gap:6px;margin:0 12px}.delivery-grid .package-list>div{display:flex;align-items:center;gap:8px;min-width:0;padding:9px;border:1px solid #e1e8eb;border-radius:9px}.delivery-grid .package-list>div>span{flex:none}.delivery-grid .package-list>div>p{display:grid;gap:3px;min-width:0;flex:1;margin:0}.delivery-grid .package-list>div>p b{font-size:9px;color:#43585d}.delivery-grid .package-list>div>p small{font-size:8px;color:#758286}.delivery-grid .package-list .status{font-size:8px}.delivery-grid .qa-validation-checks{margin:12px}.delivery-action-row{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;padding:0 12px 12px}.delivery-action-row .btn{min-height:36px}.reconciliation-panel{display:grid;gap:8px;margin:12px;padding-top:12px;border-top:1px solid #e4ebed}.reconciliation-panel h3{margin:0;color:#41595e;font-size:11px}.reconciliation-panel .field{margin:0}.reconciliation-panel textarea{min-height:65px}.external-status-note{margin:0}
+.stage-workspace button:focus-visible,.stage-workspace select:focus-visible,.stage-workspace input:focus-visible,.stage-workspace textarea:focus-visible,.activity-dialog button:focus-visible{outline:3px solid #438b7c;outline-offset:2px}
+@media(max-width:1250px){.intake-workspace{grid-template-columns:minmax(220px,245px) minmax(0,1fr);grid-template-areas:"workflow workflow" "queue processing" "events events"}.scheduling-grid{grid-template-columns:minmax(220px,250px) minmax(0,1fr)}.scheduling-grid>.appointment-detail-panel{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}.scheduling-grid>.appointment-detail-panel>.panel-title{grid-column:1/-1}.scheduling-grid>.appointment-detail-panel>.appointment-list,.scheduling-grid>.appointment-detail-panel>.appointment-history,.scheduling-grid>.appointment-detail-panel>.outreach-panel,.scheduling-grid>.appointment-detail-panel>.appointment-management{min-width:0}.clinical-grid,.qa-grid,.delivery-grid,.triage-grid{grid-template-columns:minmax(220px,250px) minmax(0,1fr)}.clinical-grid>.progress-rail,.qa-grid>.findings-rail,.delivery-grid>.delivery-assist,.triage-grid>.ai-rail{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}.clinical-grid>.progress-rail>.panel-title,.qa-grid>.findings-rail>.panel-title,.delivery-grid>.delivery-assist>.panel-title,.triage-grid>.ai-rail>.panel-title{grid-column:1/-1}.clinical-grid>.dbq-editor,.qa-grid>.comparison-panel,.delivery-grid>.delivery-timeline-panel,.triage-grid>.plan-canvas{grid-column:2;grid-row:2}}
+@media(max-width:900px){.intake-workspace,.triage-grid,.scheduling-grid,.clinical-grid,.qa-grid,.delivery-grid{grid-template-columns:minmax(0,1fr)}.intake-workspace{grid-template-areas:"workflow" "queue" "processing" "events"}.stage-workspace>.stage-flow{grid-column:1}.scheduling-grid>.appointment-detail-panel,.clinical-grid>.progress-rail,.qa-grid>.findings-rail,.delivery-grid>.delivery-assist,.triage-grid>.ai-rail{grid-column:1;grid-template-columns:minmax(0,1fr)}.clinical-grid>.dbq-editor,.qa-grid>.comparison-panel,.delivery-grid>.delivery-timeline-panel,.triage-grid>.plan-canvas{grid-column:1;grid-row:auto}.comparison-body{grid-template-columns:minmax(0,1fr)}.comparison-body article+article{border-left:0;border-top:1px solid #dfe5ef}.scheduling-filters{grid-template-columns:minmax(0,1fr)}.slot-picker{grid-template-columns:minmax(0,1fr)}.slot-picker>.btn{width:100%}.activity-backdrop{padding:8px}.activity-dialog{max-height:90vh}.activity-dialog>header,.activity-dialog>p{padding-left:14px;padding-right:14px}.activity-list{padding-left:14px;padding-right:14px}.activity-list article{grid-template-columns:minmax(0,1fr)}.activity-list time{grid-column:1}.qa-actions{display:grid;grid-template-columns:minmax(0,1fr)}.delivery-action-row{display:grid;grid-template-columns:minmax(0,1fr)}.delivery-action-row .btn{width:100%}}
+
+/* Give every workbench a stable desktop order. Older reference breakpoints
+   target the same stage class names and used to place the queue over this row. */
+.triage-grid>.stage-flow,.scheduling-grid>.stage-flow,.clinical-grid>.stage-flow,.qa-grid>.stage-flow,.delivery-grid>.stage-flow{grid-column:1/-1;grid-row:1}
+.triage-grid>.evidence-rail,.scheduling-grid>.scheduling-queue,.clinical-grid>.clinical-evidence,.qa-grid>.qa-queue,.delivery-grid>.package-rail{grid-column:1;grid-row:2}
+.triage-grid>.plan-canvas,.scheduling-grid>.examiner-match-panel,.clinical-grid>.dbq-editor,.qa-grid>.comparison-panel,.delivery-grid>.delivery-timeline-panel{grid-column:2;grid-row:2}
+.triage-grid>.ai-rail,.clinical-grid>.progress-rail,.qa-grid>.findings-rail,.delivery-grid>.delivery-assist{grid-column:3;grid-row:2}
+
+@media(max-width:1250px) and (min-width:901px){
+  .triage-grid>.stage-flow,.scheduling-grid>.stage-flow,.clinical-grid>.stage-flow,.qa-grid>.stage-flow,.delivery-grid>.stage-flow{grid-column:1/-1;grid-row:1}
+  .triage-grid>.evidence-rail,.scheduling-grid>.scheduling-queue,.clinical-grid>.clinical-evidence,.qa-grid>.qa-queue,.delivery-grid>.package-rail{grid-column:1;grid-row:2}
+  .triage-grid>.plan-canvas,.scheduling-grid>.examiner-match-panel,.clinical-grid>.dbq-editor,.qa-grid>.comparison-panel,.delivery-grid>.delivery-timeline-panel{grid-column:2;grid-row:2}
+  .triage-grid>.ai-rail,.clinical-grid>.progress-rail,.qa-grid>.findings-rail,.delivery-grid>.delivery-assist,.scheduling-grid>.appointment-detail-panel{grid-column:1/-1;grid-row:3}
+  .triage-grid>.ai-rail>.panel-title,.clinical-grid>.progress-rail>.panel-title,.qa-grid>.findings-rail>.panel-title,.delivery-grid>.delivery-assist>.panel-title{grid-column:1/-1}
+  .triage-grid>.ai-rail>.ai-block{grid-column:1/-1}
+  .triage-grid>.ai-rail>.uncertainty{grid-column:1}
+  .triage-grid>.ai-rail>.triage-handoff-note{grid-column:2}
+  .triage-grid>.ai-rail>.btn{grid-column:1/-1}
+  .clinical-grid>.progress-rail>.progress-list{grid-column:1}
+  .clinical-grid>.progress-rail>.diagnostic-card{grid-column:2;grid-row:2/span 2}
+  .clinical-grid>.progress-rail>.clinical-scope-note{grid-column:1}
+  .clinical-grid>.progress-rail>.btn{grid-column:1/-1}
+  .qa-grid>.findings-rail{grid-template-columns:minmax(0,1fr)}
+  .qa-grid>.findings-rail>.panel-title,.qa-grid>.findings-rail>.finding-list,.qa-grid>.findings-rail>.qa-finding-history,.qa-grid>.findings-rail>.ai-block,.qa-grid>.findings-rail>.scope-note{grid-column:1;grid-row:auto}
+  .delivery-grid>.delivery-assist>.ai-block{grid-column:1}
+  .delivery-grid>.delivery-assist>.reconciliation-panel{grid-column:2;grid-row:2/span 3}
+  .scheduling-grid>.appointment-detail-panel{display:block}
+}
+
+@media(max-width:900px){
+  .triage-grid>.stage-flow,.scheduling-grid>.stage-flow,.clinical-grid>.stage-flow,.qa-grid>.stage-flow,.delivery-grid>.stage-flow{grid-column:1;grid-row:auto}
+  .triage-grid>.evidence-rail,.scheduling-grid>.scheduling-queue,.clinical-grid>.clinical-evidence,.qa-grid>.qa-queue,.delivery-grid>.package-rail{grid-column:1;grid-row:auto}
+  .triage-grid>.plan-canvas,.scheduling-grid>.examiner-match-panel,.clinical-grid>.dbq-editor,.qa-grid>.comparison-panel,.delivery-grid>.delivery-timeline-panel{grid-column:1;grid-row:auto}
+  .triage-grid>.ai-rail,.clinical-grid>.progress-rail,.qa-grid>.findings-rail,.delivery-grid>.delivery-assist,.scheduling-grid>.appointment-detail-panel{grid-column:1;grid-row:auto;grid-template-columns:minmax(0,1fr)}
+  .scheduling-grid>.appointment-detail-panel{display:block}
+  .triage-grid>.ai-rail>.panel-title,.clinical-grid>.progress-rail>.panel-title,.qa-grid>.findings-rail>.panel-title,.delivery-grid>.delivery-assist>.panel-title{grid-column:1}
+  .clinical-grid>.progress-rail>.diagnostic-card,.delivery-grid>.delivery-assist>.reconciliation-panel{grid-column:1;grid-row:auto}
+  .qa-grid>.findings-rail>.qa-finding-history{grid-column:1;grid-row:auto}
+}
+
+/* Keep the selected-case panel from squeezing three-column workbenches on
+   medium desktop widths. Reserve the side-by-side mode for wider workspaces. */
+@media(min-width:1500px) and (max-width:1699px){
+  .page-scroll{grid-template-columns:minmax(0,1fr)}
+  .page-main{display:contents}
+  .page-main>*{order:2}
+  .page-main>.workspace-heading{order:0}
+  .case-panel{position:static;order:1;grid-column:1;grid-row:auto;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-areas:"head due" "facts facts" "sla next" "related related";align-items:start}
+  .case-head{grid-area:head}
+  .case-due{grid-area:due}
+  .case-facts{grid-area:facts}
+  .sla-bars{grid-area:sla}
+  .case-record-summary{grid-area:related}
+  .next-action{grid-area:next}
+}
+
+/* Shared guardrails: stage content must shrink with its grid track instead of
+   pushing the page wider than the viewport. */
+.stage-workspace,
+.stage-workspace>*{min-width:0}
+.stage-workspace .panel-title>div{min-width:0}
+.stage-workspace .panel-title h2,
+.stage-workspace .panel-title p{overflow-wrap:anywhere}
+.stage-workspace .btn{height:auto;min-height:36px;max-width:100%;white-space:normal;line-height:1.25;text-align:center}
+.stage-workspace .status{min-width:0;max-width:100%;white-space:normal;line-height:1.25;overflow-wrap:anywhere;text-align:center;justify-content:center}
+.stage-workspace .status>i{flex:none}
+.stage-workspace .case-list-top{align-items:flex-start;gap:7px;min-width:0}
+.stage-workspace .case-list-top>b{min-width:0;overflow-wrap:anywhere}
+.stage-workspace .case-list-top>.status{flex:0 1 auto}
+.stage-workspace .case-list strong,
+.stage-workspace .case-list small{overflow-wrap:anywhere}
+.stage-workspace .field,
+.stage-workspace .field textarea,
+.stage-workspace .field input,
+.stage-workspace .field select{min-width:0;max-width:100%;width:100%}
+
+/* Clinical evaluation: keep diagnostic inputs and progress labels inside the
+   rail, and let the footer actions reflow when the editor narrows. */
+.clinical-grid>.dbq-editor{container:dbq-editor / inline-size}
+.clinical-grid>.progress-rail{container:clinical-rail / inline-size}
+.clinical-grid .dbq-top{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:10px;min-width:0}
+.clinical-grid .dbq-top>div:first-child{min-width:0}
+.clinical-grid .dbq-top>div:first-child>span,
+.clinical-grid .dbq-top small{overflow-wrap:anywhere}
+.clinical-grid .save-state{display:flex;align-items:center;gap:5px;max-width:100%;white-space:normal;line-height:1.3}
+.clinical-grid .save-state svg{flex:none}
+.clinical-grid .clinical-record-summary>span{overflow-wrap:anywhere}
+.clinical-grid .progress-list>div{display:grid;grid-template-columns:22px minmax(0,1fr) max-content;align-items:center;gap:8px;min-width:0}
+.clinical-grid .progress-list>div>b{min-width:0;overflow-wrap:anywhere}
+.clinical-grid .progress-list .status{max-width:100px}
+.clinical-grid .diagnostic-card,
+.clinical-grid .diagnostic-row{min-width:0;max-width:100%}
+.clinical-grid .diagnostic-row>small{min-width:0;overflow-wrap:anywhere;word-break:break-word}
+.clinical-grid .diagnostic-row .field{margin:4px 0 0}
+.clinical-grid .diagnostic-row .btn,
+.clinical-grid .diagnostic-row .text-button{width:100%;min-width:0;white-space:normal;overflow-wrap:anywhere}
+.clinical-grid .editor-footer{display:grid;grid-template-columns:minmax(0,1fr) minmax(270px,auto);align-items:start}
+.clinical-grid .editor-footer>span{min-width:0;align-items:flex-start;line-height:1.45}
+.clinical-grid .editor-footer>span svg{flex:none}
+.clinical-grid .editor-footer>div{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;min-width:0}
+.clinical-grid .editor-footer>div .btn{width:100%;height:auto;min-height:38px;white-space:normal;overflow-wrap:anywhere}
+.clinical-grid .editor-footer>div .btn-primary{grid-column:1/-1}
+@container dbq-editor (max-width:680px){
+  .clinical-grid .dbq-top{grid-template-columns:minmax(0,1fr)}
+  .clinical-grid .save-state{justify-self:start}
+  .clinical-grid .editor-footer{grid-template-columns:minmax(0,1fr)}
+}
+@container dbq-editor (max-width:360px){
+  .clinical-grid .editor-footer>div{grid-template-columns:minmax(0,1fr)}
+  .clinical-grid .editor-footer>div .btn-primary{grid-column:1}
+}
+
+/* Delivery: give report text and its state badge separate grid tracks. */
+.delivery-grid>.delivery-timeline-panel{container:delivery-center / inline-size}
+.delivery-grid .delivery-status-banner{display:grid;grid-template-columns:43px minmax(0,1fr);align-items:start;min-width:0}
+.delivery-grid .delivery-status-banner>div{min-width:0}
+.delivery-grid .delivery-status-banner small,
+.delivery-grid .delivery-status-banner h2,
+.delivery-grid .delivery-status-banner p{overflow-wrap:anywhere}
+.delivery-grid .package-list{container:package-rows / inline-size}
+.delivery-grid .package-list>div{display:grid;grid-template-columns:28px minmax(0,1fr) minmax(76px,max-content);align-items:center;gap:8px}
+.delivery-grid .package-list>div>p{min-width:0;overflow-wrap:anywhere}
+.delivery-grid .package-list>div>p small{overflow-wrap:anywhere;word-break:break-word}
+.delivery-grid .package-list .status{justify-self:end;max-width:128px}
+.delivery-grid .delivery-events>div{grid-template-columns:25px minmax(0,1fr) minmax(76px,max-content);align-items:start;min-width:0}
+.delivery-grid .delivery-events>div>div{min-width:0;overflow-wrap:anywhere}
+.delivery-grid .delivery-events small{line-height:1.45;overflow-wrap:anywhere;word-break:break-word}
+.delivery-grid .delivery-events .status{justify-self:end}
+.delivery-grid .delivery-action-row .btn{min-width:0;overflow-wrap:anywhere}
+.delivery-grid .reconciliation-panel{min-width:0}
+.delivery-grid .reconciliation-panel .btn{width:100%;overflow-wrap:anywhere}
+@container package-rows (max-width:390px){
+  .delivery-grid .package-list>div{grid-template-columns:28px minmax(0,1fr)}
+  .delivery-grid .package-list .status{grid-column:2;justify-self:start}
+}
+@container delivery-center (max-width:470px){
+  .delivery-grid .delivery-events>div{grid-template-columns:25px minmax(0,1fr)}
+  .delivery-grid .delivery-events .status{grid-column:2;justify-self:start;margin:0 0 8px}
+}
+
+/* Avoid compressed controls and label collisions across all stage pages. */
+.scheduling-grid .appointment-list>button>span{align-items:flex-start}
+.scheduling-grid .appointment-list>button>span>b{min-width:0;overflow-wrap:anywhere}
+.scheduling-grid .appointment-list .status{flex:0 1 auto}
+.qa-grid .comparison-toolbar{flex-wrap:wrap;min-width:0}
+.qa-grid .qa-version-badge{max-width:100%;overflow-wrap:anywhere}
+.qa-grid .qa-validation-checks>div:not(.qa-validation-heading){display:grid;grid-template-columns:minmax(0,1fr) max-content;align-items:center;gap:10px;min-width:0}
+.qa-grid .qa-validation-checks>div:not(.qa-validation-heading)>span:first-child{min-width:0;overflow-wrap:anywhere}
+.qa-grid .qa-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+.qa-grid .qa-actions .btn{width:100%;height:auto;min-height:38px;white-space:normal;overflow-wrap:anywhere}
+.qa-grid .qa-actions .btn-primary{grid-column:1/-1}
+.qa-grid .finding-row{min-width:0}
+.qa-grid .finding-row>*{min-width:0;overflow-wrap:anywhere}
+.intake-workspace .intake-exception-actions{flex-wrap:wrap}
+.intake-workspace .intake-exception-actions .btn{min-width:120px}
+.triage-grid .triage-queue-list{max-height:min(680px,70vh);overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+
+@media(max-width:560px){
+  .clinical-grid .progress-list>div{grid-template-columns:22px minmax(0,1fr) max-content;gap:6px}
+  .clinical-grid .progress-list .status{max-width:82px}
+  .delivery-grid .delivery-status-banner{grid-template-columns:36px minmax(0,1fr);gap:9px;margin:9px;padding:10px}
+  .delivery-grid .delivery-icon{width:36px;height:36px}
+  .delivery-grid .delivery-action-row{padding-inline:10px}
+  .qa-grid .qa-actions{grid-template-columns:minmax(0,1fr)}
+  .qa-grid .qa-actions .btn-primary{grid-column:1}
+}
+
+.intake-import{display:grid;gap:10px;padding:12px;min-width:0;border:1px solid var(--line);border-radius:12px;margin:12px 0}
+.intake-import small,.intake-file-detail{min-width:0;overflow-wrap:anywhere}
+.intake-import .field input[type=file]{width:100%;min-width:0}
+.intake-import .intake-synthetic-confirmation{display:flex;align-items:flex-start;gap:8px;font-size:13px}
+.intake-import-error{color:#aa3031}
+.intake-attach>summary,.intake-file-detail summary{font-weight:700;cursor:pointer;margin:8px 0}
+.intake-file-detail blockquote{margin:8px 0;padding:8px 10px;border-left:3px solid var(--accent);background:var(--accent-soft)}
+.intake-file-detail blockquote p{margin:4px 0}
+.intake-workspace .intake-results>li{grid-template-columns:auto minmax(0,1fr) auto}
+@media(max-width:600px){
+  .intake-workspace .intake-results>li{display:grid;grid-template-columns:auto minmax(0,1fr)}
+  .intake-workspace .intake-results>li>.status{grid-column:2;justify-self:start}
+}
+
+@media(max-width:1699px){
+  .app-shell[data-stage="Intake"] .case-panel{order:3}
+}
+@media(max-width:700px){
+  .app-shell[data-stage="Intake"] .topbar{height:auto;flex-shrink:0}
+}
+
+.intake-receipt-card>div{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.intake-receipt-card>small{display:block}
+.intake-workspace .intake-results>li{align-items:start}

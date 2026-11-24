@@ -1,0 +1,65 @@
+# Local environment files and secrets. Keep example templates versioned.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Node, npm, Vite, and frontend build output
+node_modules/
+dist/
+coverage/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python runtime, virtual environments, and tooling caches
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+build/
+celerybeat-schedule
+
+# Local databases and service data
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+postgres_data/
+rabbitmq_data/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+image.png
+Final_MDE-NG_RFP-client-requirement.pdf
+Medical Disability Examinations—Next Generation (MDE-NG).docx
+MDE-NG Workflow Walkthrough.docx
+*.docx
+IMPLEMENTATION_PLAN.md
+sample-data/

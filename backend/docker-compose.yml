@@ -1,0 +1,13 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    env_file: .env
+    environment:
+      APP_ENV: dev
+      DATABASE_URL: sqlite:////srv/backend/data/mde-ng-dev.sqlite3
+      AUTH_DATABASE_PATH: /srv/backend/data/mde-ng-accounts.sqlite3
+    volumes:
+      - ./data:/srv/backend/data
+    ports: ["127.0.0.1:9090:9090"]

@@ -1,0 +1,11 @@
+{
+  "claimant_id": "SYN-CLAIM-1001",
+  "name": "Jordan Sample",
+  "dob": "1985-04-12",
+  "esr_id": "DEMO-ESR-2026-1001",
+  "contentions": [
+    "right shoulder condition",
+    "hearing difficulty",
+    "dermatitis"
+  ]
+}
