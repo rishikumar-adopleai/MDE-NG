@@ -36,9 +36,56 @@ class ExamRequest:
     program: str
     contentions: tuple[ContentionRequest, ...]
     special_instructions: str = ""
+    postal_code: str = ""
+    travel_limit_miles: int | None = None
 
 def clean(value: str | None, limit: int) -> str:
     return " ".join((value or "").split())[:limit]
+
+
+def _parse_optional_miles(value: str | None) -> int | None:
+    text = clean(value, 32)
+    if not text:
+        return None
+    m = re.match(r"^(\d{1,4})(?:\s*(?:mi|miles?))?$", text, re.IGNORECASE)
+    if not m:
+        return None
+    miles = int(m.group(1))
+    return miles if 1 <= miles <= 5000 else None
+
+
+def _first_text(node: ElementTree.Element | None, paths: tuple[str, ...], limit: int) -> str:
+    if node is None:
+        return ""
+    for path in paths:
+        val = clean(node.findtext(path), limit)
+        if val:
+            return val
+    return ""
+
+
+def _extract_travel_limit(nodes: tuple[ElementTree.Element | None, ...]) -> int | None:
+    tag_paths = (
+        "{*}TravelLimitMiles",
+        "{*}MaxTravelMiles",
+        "{*}MaxTravelDistance",
+        "{*}TravelDistanceLimit",
+        ".//{*}TravelLimitMiles",
+        ".//{*}MaxTravelMiles",
+        ".//{*}MaxTravelDistance",
+        ".//{*}TravelDistanceLimit",
+    )
+    attr_names = ("travelLimitMiles", "maxTravelMiles", "maxTravelDistance", "travelDistanceLimit")
+    for node in nodes:
+        if node is None:
+            continue
+        for attr in attr_names:
+            if parsed := _parse_optional_miles(node.get(attr)):
+                return parsed
+        for path in tag_paths:
+            if parsed := _parse_optional_miles(node.findtext(path)):
+                return parsed
+    return None
 
 @lru_cache(maxsize=1)
 def exam_management_namespace() -> str:
@@ -83,13 +130,19 @@ def parse_exam_request(content: bytes) -> ExamRequest:
             if person is not None:
                 name = clean(", ".join(filter(None, (person.get("lastName"), person.get("firstName"))))
                              or person.get("fullName"), 100) or None
-            city = clean(person.findtext("{*}Address/{*}City") if person is not None else None, 80)
-            state_code = clean(person.findtext("{*}Address/{*}State") if person is not None else None, 15)
+            city = _first_text(person, ("{*}Address/{*}City",), 80)
+            state_code = _first_text(person, ("{*}Address/{*}State",), 15).upper()
+            postal_code = _first_text(
+                person,
+                ("{*}Address/{*}PostalCode", "{*}Address/{*}ZipCode", "{*}Address/{*}ZIPCode", "{*}Address/{*}Zip"),
+                20,
+            )
             period = person.find("{*}PeriodsOfService/{*}Period") if person is not None else None
             branch = clean(period.get("branchOfService") if period is not None else None, 60)
             groups = {b.casefold(): b for b in ("Army", "Navy", "Air Force", "Marine Corps", "Coast Guard", "Space Force")}
             claim = next((child for child in event if child.tag.rsplit("}", 1)[-1].endswith("ClaimInformation")), None)
             program = clean(claim.get("benefitProgramType") if claim is not None else None, 100)
+            travel_limit_miles = _extract_travel_limit((event, person, claim))
             
             contentions = []
             seen = set()
@@ -115,8 +168,19 @@ def parse_exam_request(content: bytes) -> ExamRequest:
             if not 1 <= len(contentions) <= 100:
                 raise HTTPException(422, "The request must contain between 1 and 100 active contentions.")
             
-            return ExamRequest(reference, event_id, received.astimezone(UTC).isoformat(), name, city, state_code,
-                               groups.get(branch.casefold(), branch), program, tuple(contentions))
+            return ExamRequest(
+                reference,
+                event_id,
+                received.astimezone(UTC).isoformat(),
+                name,
+                city,
+                state_code,
+                groups.get(branch.casefold(), branch),
+                program,
+                tuple(contentions),
+                postal_code=postal_code,
+                travel_limit_miles=travel_limit_miles,
+            )
         
         # Format 2: Direct ExamSchedulingRequest document
         elif tag_name == "ExamSchedulingRequest":
@@ -147,13 +211,19 @@ def parse_exam_request(content: bytes) -> ExamRequest:
                 if person is not None:
                     name = clean(person.findtext("{*}FullName") or person.get("fullName"), 100) or None
 
-            city = clean(root.findtext(".//{*}Address/{*}City"), 80)
-            state_code = clean(root.findtext(".//{*}Address/{*}State"), 15)
+            city = _first_text(root, (".//{*}Address/{*}City",), 80)
+            state_code = _first_text(root, (".//{*}Address/{*}State",), 15).upper()
+            postal_code = _first_text(
+                root,
+                (".//{*}Address/{*}PostalCode", ".//{*}Address/{*}ZipCode", ".//{*}Address/{*}ZIPCode", ".//{*}Address/{*}Zip"),
+                20,
+            )
             branch = clean(root.findtext(".//{*}BranchOfService") or root.findtext(".//{*}PeriodOfService/{*}BranchOfService"), 60)
             groups = {b.casefold(): b for b in ("Army", "Navy", "Air Force", "Marine Corps", "Coast Guard", "Space Force")}
             
             program = clean(root.findtext(".//{*}ProgramTypeCode") or root.findtext(".//{*}ClaimLabel") or "Disability Compensation", 100)
             instructions = clean(root.findtext(".//{*}SpecialInstructions") or "", 500)
+            travel_limit_miles = _extract_travel_limit((root, root.find(".//{*}Veteran"), root.find(".//{*}Claimant"), root.find(".//{*}Claim")))
 
             contentions = []
             seen = set()
@@ -189,6 +259,8 @@ def parse_exam_request(content: bytes) -> ExamRequest:
                 claimant=name,
                 city=city,
                 state_code=state_code,
+                postal_code=postal_code,
+                travel_limit_miles=travel_limit_miles,
                 service_group=groups.get(branch.casefold(), branch),
                 program=program,
                 contentions=tuple(contentions),
@@ -217,7 +289,13 @@ def import_exam_request(db: Session, state: dict, request: ExamRequest, original
         "esrId": request.reference, "eventId": request.event_id, "sourceEventAt": request.received_at,
         "sourceHash": digest, "program": request.program, "schemaVersion": "4.7",
         "provenance": "exam-management-request",
+        "city": request.city,
+        "stateCode": request.state_code,
+        "postalCode": request.postal_code,
+        **({"travelLimitMiles": request.travel_limit_miles} if request.travel_limit_miles is not None else {}),
     })
+    if request.travel_limit_miles is not None:
+        esr["travelLimitMiles"] = request.travel_limit_miles
     claimant = state["veteransById"][esr["veteranId"]]
     if not request.claimant:
         claimant["initials"] = ""
@@ -225,6 +303,9 @@ def import_exam_request(db: Session, state: dict, request: ExamRequest, original
     claimant["serviceGroup"] = request.service_group
     claimant["city"] = request.city
     claimant["stateCode"] = request.state_code
+    claimant["postalCode"] = request.postal_code
+    if request.travel_limit_miles is not None:
+        claimant["travelLimitMiles"] = request.travel_limit_miles
     claimant["homeFacilityId"] = next((
         facility["id"] for facility in state["facilitiesById"].values()
         if request.city and request.state_code and facility["city"].casefold() == request.city.casefold()

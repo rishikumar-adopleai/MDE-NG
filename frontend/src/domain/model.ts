@@ -715,6 +715,8 @@ export interface EsrInspectionResult {
   benefitProgram: string;
   city: string;
   stateCode: string;
+  postalCode?: string;
+  travelLimitMiles?: number | null;
   contentions: { title: string; classification?: string; forms?: string[] }[];
   specialInstructions: string;
   fileType: string;
@@ -919,4 +921,124 @@ export interface TriageWorkspaceView {
     modalities?: Modality[];
     diagnostics: string[];
   }[];
+}
+
+export interface SchedulingFacilityMatch {
+  facilityId: string;
+  facilityName: string;
+  facilityType: string;
+  city: string;
+  stateCode: string;
+  postalCode: string;
+  distanceMiles: number | null;
+  distancePrecision?: 'exact' | 'approximate-zip' | 'unknown';
+  validDoctorCount?: number;
+  availableSlotCount?: number;
+  withinTravelLimit: boolean;
+  accessibilityFeatures: string[];
+  diagnosticCapabilities: string[];
+}
+
+export interface SchedulingSlotMatch {
+  slotId: string;
+  examinerId: string;
+  facilityId: string;
+  startsAt: string;
+  endsAt: string;
+  localStartsAt: string;
+  localEndsAt: string;
+  timeZone: string;
+  durationMinutes: number;
+  modality: Modality;
+}
+
+export interface SchedulingDoctorMatch {
+  examinerId: string;
+  doctorName: string;
+  primarySpecialty: string;
+  specialties: string[];
+  credentials: string[];
+  licenseNumber: string;
+  licenseState: string;
+  licenseExpiryDate: string;
+  licenseStatus: string;
+  authorizedDbqTypes: string[];
+  slots: SchedulingSlotMatch[];
+}
+
+export interface SchedulingExcludedDoctor {
+  examinerId: string;
+  doctorName: string;
+  primarySpecialty: string;
+  licenseStatus: string;
+  licenseExpiryDate: string;
+  reason: string;
+}
+
+export interface SchedulingMatchResponse {
+  esrId: EntityId;
+  modality: Modality;
+  travelLimitMiles?: number | null;
+  locationPrecision?: 'exact' | 'approximate-zip' | 'unknown';
+  locationVerificationRequired?: boolean;
+  facilities: SchedulingFacilityMatch[];
+  selectedFacilityId: string;
+  validDoctors: SchedulingDoctorMatch[];
+  excludedDoctors: SchedulingExcludedDoctor[];
+  selectedDoctorId: string;
+  slots: SchedulingSlotMatch[];
+  schedulingException?: {
+    code: string;
+    message: string;
+    reasons: string[];
+  } | null;
+}
+
+export interface SchedulingCompatibleGroup {
+  groupId: string;
+  modality: Modality;
+  specialtyGroup: string;
+  requirementIds: EntityId[];
+  titles: string[];
+  isBundled: boolean;
+  reason: string;
+}
+
+export interface SchedulingCaseRequirement extends ExaminationRequirement {
+  workItemId: EntityId;
+  workStatus: string;
+  appointment?: Appointment & {
+    examinerName?: string;
+    examinerLicenseExpiry?: string;
+    facilityName?: string;
+    slotId?: string;
+    outreachLog?: { id: string; at: string; actorId: string; channel: string; outcome: string; note: string }[];
+  } | null;
+}
+
+export interface SchedulingCaseView {
+  esrId: EntityId;
+  claimantName: string;
+  initials: string;
+  claimIdentifier: string;
+  city: string;
+  stateCode: string;
+  postalCode: string;
+  phone: string;
+  email: string;
+  priority: ESR['priority'];
+  dueAt: string;
+  specialInstructions: string;
+  travelLimitMiles?: number | null;
+  requirements: SchedulingCaseRequirement[];
+  compatibleGroups: SchedulingCompatibleGroup[];
+  appointments: SchedulingCaseRequirement['appointment'][];
+  approvedCount: number;
+  scheduledCount: number;
+  pendingCount: number;
+}
+
+export interface SchedulingWorkspaceView {
+  queueIds: EntityId[];
+  casesByEsrId: Record<EntityId, SchedulingCaseView>;
 }

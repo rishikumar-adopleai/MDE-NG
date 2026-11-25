@@ -115,7 +115,8 @@ def add_case(state: dict, name: str | None, titles: list[str], actor: str, now: 
         "initials": initials,
         "claimIdentifier": f"SYN-{esr_id[-12:].upper()}" if is_simulated else esr_id.upper(),
         "serviceGroup": "", "homeFacilityId": facility.get("id", ""),
-        "city": facility.get("city", "Synthetic" if is_simulated else ""), "stateCode": facility.get("stateCode", ""),
+        "city": facility.get("city", ""), "stateCode": facility.get("stateCode", ""),
+        "postalCode": facility.get("postalCode", ""),
         "accessibilityNeeds": [],
     }
     contention_ids = []

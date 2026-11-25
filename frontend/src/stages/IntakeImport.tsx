@@ -37,6 +37,9 @@ export function IntakeImport({ esrId, onReceived, onCancel }: {
   const [scenario, setScenario] = useState('');
   const [inspection, setInspection] = useState<EsrInspectionResult>();
   const [name, setName] = useState('');
+  const [city, setCity] = useState('');
+  const [stateCode, setStateCode] = useState('');
+  const [postalCode, setPostalCode] = useState('');
   const [contentions, setContentions] = useState('');
   const [instructions, setInstructions] = useState('');
   const heading = useRef<HTMLHeadingElement>(null);
@@ -91,12 +94,20 @@ export function IntakeImport({ esrId, onReceived, onCancel }: {
       else if (!inspection) {
         if (scenario) body.set('scenario_id', scenario);
         const result = await inspectIntakeEsr(body);
-        setName(result.claimantName || ''); setContentions(result.contentions.map(item => item.title).join('\n'));
+        setName(result.claimantName || '');
+        setCity(result.city || '');
+        setStateCode(result.stateCode || '');
+        setPostalCode(result.postalCode || '');
+        setContentions(result.contentions.map(item => item.title).join('\n'));
         setInstructions(result.specialInstructions || ''); setInspection(result);
       } else if (scenario) onReceived(await receiveIntakeExample(scenario));
       else {
         body.set('name', name.trim()); body.set('contentions', contentions.trim()); body.set('special_instructions', instructions.trim());
         body.set('service_branch', inspection.serviceBranch); body.set('esr_reference', inspection.esrReference);
+        if (city.trim()) body.set('city', city.trim());
+        if (stateCode.trim()) body.set('state_code', stateCode.trim());
+        if (postalCode.trim()) body.set('postal_code', postalCode.trim());
+        if (inspection.travelLimitMiles != null) body.set('travel_limit_miles', String(inspection.travelLimitMiles));
         onReceived(await importIntakeDocument(body, undefined, inspection.examManagementRequest));
       }
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not complete this step. Your selection is still here.'); }
@@ -132,6 +143,11 @@ export function IntakeImport({ esrId, onReceived, onCancel }: {
         {sourceControlled && (!name.trim() || !contentions.trim()) && <p role="status">The source is missing a claimant name or requested condition. Choose a corrected request to continue.</p>}
         {inspection.isDuplicate && inspection.existingEsrId && <button type="button" className="intake-secondary" onClick={() => onReceived(inspection.existingEsrId!)}>Open existing case</button>}
         <label className="intake-field">Claimant name<input value={name} onChange={event => setName(event.target.value)} required readOnly={sourceControlled} disabled={busy} /></label>
+        <div className="intake-location-row">
+          <label className="intake-field">City (optional)<input value={city} onChange={event => setCity(event.target.value)} readOnly={sourceControlled && Boolean(inspection.city)} disabled={busy} placeholder="e.g. Columbus" /></label>
+          <label className="intake-field">State<input value={stateCode} onChange={event => setStateCode(event.target.value)} readOnly={sourceControlled && Boolean(inspection.stateCode)} disabled={busy} maxLength={30} placeholder="OH or Ohio" /></label>
+          <label className="intake-field">ZIP code<input value={postalCode} onChange={event => setPostalCode(event.target.value)} readOnly={sourceControlled && Boolean(inspection.postalCode)} disabled={busy} maxLength={10} placeholder="43215" /></label>
+        </div>
         <label className="intake-field">Requested conditions (one per line)<textarea value={contentions} onChange={event => setContentions(event.target.value)} required readOnly={sourceControlled} disabled={busy} rows={3} /></label>
         <label className="intake-field">VA instructions<textarea value={instructions} onChange={event => setInstructions(event.target.value)} readOnly={sourceControlled} disabled={busy} rows={2} placeholder="No additional instructions provided" /></label>
       </>}

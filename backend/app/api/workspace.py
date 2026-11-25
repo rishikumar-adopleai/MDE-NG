@@ -13,6 +13,12 @@ from app.core.security import CurrentUser, get_current_user
 from app.models import IdempotencyRecord, OutboxJob
 from app.services.intake_store import INTAKE_COMMANDS, TRIAGE_TASK_NAME, apply_intake_command, enqueue_triage_job
 from app.services.intake_view import with_intake_views
+from app.services.scheduling import (
+    SCHEDULING_COMMANDS,
+    apply_scheduling_command,
+    find_scheduling_matches,
+    with_scheduling_view,
+)
 from app.services.stage_ai import STAGE_TASKS, generate_stage_review
 from app.services.triage import TRIAGE_COMMANDS, apply_triage_command, with_triage_view
 from app.services.triage_pipeline import run_triage_pipeline_for_state
@@ -27,9 +33,10 @@ COMMAND_ROLES = {
     **dict.fromkeys(TRIAGE_COMMANDS, "case-builder"),
     **dict.fromkeys(("recordOutreach", "holdAppointment", "confirmAppointment",
                      "setSchedulingDistanceLimit", "recordAppointmentLogistics",
-                     "rescheduleAppointment", "cancelAppointment"), "scheduler"),
+                     "verifyVeteranLocation", "rescheduleAppointment", "cancelAppointment"), "scheduler"),
     **dict.fromkeys(("saveDBQDraft", "validateDBQ", "reviewDiagnostic", "recordDiagnosticResult",
-                     "completeClinicalReview", "recordExamEncounter", "recordDiagnosticException", "resubmitCorrection"), "clinician"),
+                     "completeClinicalReview", "recordExamEncounter", "recordDiagnosticException", "resubmitCorrection",
+                     "returnClinicalToScheduling"), "clinician"),
     **dict.fromkeys(("requestCorrection", "addQAFinding", "resolveQAFinding",
                      "approveQAReview", "runQAChecklist"), "qa"),
     **dict.fromkeys(("ensureResultsPackage", "validateResultsPackage", "prepareResultsPackage",
@@ -51,6 +58,12 @@ class AIReviewRequest(BaseModel):
     entityId: str = Field(min_length=1, max_length=200)
 
 
+class SchedulingMatchRequest(BaseModel):
+    requirementIds: list[str] = Field(min_length=1, max_length=12)
+    facilityId: str | None = Field(default=None, max_length=64)
+    examinerId: str | None = Field(default=None, max_length=64)
+
+
 def workspace_reader(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     if settings.app_env == "prod" and user.role != "admin":
         raise HTTPException(403, "The aggregate workspace requires an administrator.")
@@ -68,7 +81,7 @@ def runtime() -> dict:
 def get_workspace(db: Session = Depends(get_db),
                   _user: CurrentUser = Depends(workspace_reader)) -> dict:
     state = get_state(db, backfill_requests=False, load_practice=False)
-    return with_triage_view(with_intake_views(state)) if settings.app_env == "dev" else state
+    return with_scheduling_view(with_triage_view(with_intake_views(state))) if settings.app_env == "dev" else state
 
 
 @router.get("/workspace/work-items/{work_id}")
@@ -130,7 +143,7 @@ def apply_command(
     if previous:
         if previous.response_json["fingerprint"] != fingerprint:
             raise HTTPException(409, "The command key was already used for a different operation.")
-        return {"state": with_triage_view(with_intake_views(state)), "value": previous.response_json["value"]}
+        return {"state": with_scheduling_view(with_triage_view(with_intake_views(state))), "value": previous.response_json["value"]}
     if body.revision != state["revision"]:
         raise HTTPException(409, "The workspace changed. Review the latest records and retry.")
 
@@ -138,6 +151,18 @@ def apply_command(
         outcome = apply_intake_command(state, body.action, body.args, user.user_id)
     elif body.action in TRIAGE_COMMANDS:
         outcome = apply_triage_command(state, body.action, body.args, user.user_id)
+        # Release any Stage 3 DB slots belonging to appointments cancelled by Stage 2 evidence invalidation
+        for appt in (outcome["state"].get("appointmentsById") or {}).values():
+            if appt.get("status") == "cancelled" and appt.get("invalidationReason") and appt.get("slotId"):
+                from sqlalchemy import update as sql_update
+                from app.models import Stage3TimeSlot
+                db.execute(
+                    sql_update(Stage3TimeSlot)
+                    .where(Stage3TimeSlot.slot_id == appt["slotId"])
+                    .values(slot_status="available")
+                )
+    elif body.action in SCHEDULING_COMMANDS:
+        outcome = apply_scheduling_command(db, state, body.action, body.args, user.user_id)
     else:
         outcome = run_engine({"action": body.action, "args": body.args, "state": state,
                               "actorId": user.user_id})
@@ -152,7 +177,23 @@ def apply_command(
         "fingerprint": fingerprint, "value": outcome["value"],
     }))
     db.commit()
-    return {**outcome, "state": with_triage_view(with_intake_views(next_state))}
+    return {**outcome, "state": with_scheduling_view(with_triage_view(with_intake_views(next_state)))}
+
+
+@router.post("/scheduling/match")
+def match_scheduling_options(
+    body: SchedulingMatchRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(workspace_reader),
+) -> dict:
+    if settings.app_env != "dev":
+        raise HTTPException(503, "This workflow action is unavailable.")
+    if user.role not in {"scheduler", "admin", "case-builder"}:
+        raise HTTPException(403, "This role cannot search scheduling matches.")
+    state = get_state(db, backfill_requests=False, load_practice=False)
+    return find_scheduling_matches(
+        db, state, body.requirementIds, facility_id=body.facilityId, examiner_id=body.examinerId
+    )
 
 
 @router.post("/triage/esrs/{esr_id}/prepare")
@@ -188,7 +229,7 @@ def prepare_triage_dossier(
         try:
             save_next_state(db, revision, state)
             db.commit()
-            return {"ok": True, "esrId": esr_id, "state": with_triage_view(with_intake_views(state))}
+            return {"ok": True, "esrId": esr_id, "state": with_scheduling_view(with_triage_view(with_intake_views(state)))}
         except HTTPException as exc:
             if exc.status_code != 409:
                 raise

@@ -1,7 +1,7 @@
-import type { AIStageReview, DocumentReviewDecision, EsrInspectionResult, IntakeWorkspaceView, StageKey, TriageWorkspaceView, WorkspaceState } from '../../domain/model';
+import type { AIStageReview, DocumentReviewDecision, EsrInspectionResult, IntakeWorkspaceView, SchedulingWorkspaceView, StageKey, TriageWorkspaceView, WorkspaceState } from '../../domain/model';
 export type { AIStageReview, EsrInspectionResult } from '../../domain/model';
 
-export type WorkspacePayload = WorkspaceState & { intake?: IntakeWorkspaceView; triage?: TriageWorkspaceView };
+export type WorkspacePayload = WorkspaceState & { intake?: IntakeWorkspaceView; triage?: TriageWorkspaceView; scheduling?: SchedulingWorkspaceView };
 
 export type WorkspaceRuntime = {
   mode: 'dev' | 'prod';
@@ -116,4 +116,20 @@ export function triggerTriagePrepare(esrId: string, force = false) {
     `/triage/esrs/${encodeURIComponent(esrId)}/prepare?force=${force ? 'true' : 'false'}`,
     { method: 'POST' },
   );
+}
+
+export function matchSchedulingOptions(
+  requirementIds: string[],
+  facilityId?: string,
+  examinerId?: string,
+) {
+  return request<import('../../domain/model').SchedulingMatchResponse>('/scheduling/match', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requirementIds,
+      facilityId: facilityId || null,
+      examinerId: examinerId || null,
+    }),
+  });
 }

@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import settings
 from app.services.clinical_nlp import extract_facts_for_document, is_clinical_document, search_relevant_evidence
-from app.services.intake_processing import DocumentProcessingError, azure_review_completion
+from app.services.intake_processing import DocumentProcessingError, azure_review_completion, get_last_completion_provider
 from app.services.va_rules import (
     RULES_VERSION,
     analyze_evidence_gaps_and_pathway,
@@ -329,7 +329,8 @@ def run_guarded_triage_llm(
         parsed.citationLabels = [c for c in parsed.citationLabels if c in valid_citations]
         for item in parsed.contentions:
             item.citationLabels = [c for c in item.citationLabels if c in valid_citations]
-        return parsed, "azure-openai", False
+        provider = get_last_completion_provider()
+        return parsed, provider, False
     except (DocumentProcessingError, ValueError, Exception) as exc:
         logger.warning("Stage 2 AI summarizer fell back to deterministic chronology (%s).", type(exc).__name__)
         return None, "local", True

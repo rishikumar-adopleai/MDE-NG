@@ -146,8 +146,11 @@ def invalidate_stale_triage_plans(state: dict, esr_id: str, now: str, reason: st
                 touch(req, now, status="superseded-by-evidence-revision", invalidatedAt=now, invalidationReason=reason)
             sched_key = f"work-scheduling-{req_id}"
             sched_work = state.get("workItemsById", {}).get(sched_key)
-            if sched_work and sched_work.get("status") in {"queued", "in-progress", "blocked"}:
+            if sched_work and sched_work.get("status") in {"queued", "in-progress", "blocked", "completed"}:
                 touch(sched_work, now, status="cancelled", blockingReasons=[reason])
+            for appt in state.get("appointmentsById", {}).values():
+                if req_id in (appt.get("requirementIds") or []) and appt.get("status") in {"held", "confirmed", "confirmed-locally"}:
+                    touch(appt, now, status="cancelled", invalidationReason=reason, cancelledAt=now)
         touch(
             item, now,
             status="awaiting-review",

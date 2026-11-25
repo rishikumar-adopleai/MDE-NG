@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowRight, ClipboardList, FileText, FlaskConical } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ClipboardList, FileText, FlaskConical } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';
 import type { DiagnosticReportedFlag, FieldValues } from '../domain/model';
 import type { clinicalView } from '../../server/stageViews';
@@ -53,13 +53,19 @@ function DiagnosticEditor({ diagnostic }: { diagnostic: ClinicalDetail['diagnost
   </details>;
 }
 
-function ClinicalReport({ detail, onSigned }: { detail: ClinicalDetail; onSigned: (entityId?: string) => void }) {
-  const { saveDBQDraft, validateDBQ, recordExamEncounter, resubmitCorrection, completeClinicalReview } = useWorkspace();
+function ClinicalReport({ detail, onSigned, onReturned }: {
+  detail: ClinicalDetail;
+  onSigned: (entityId?: string) => void;
+  onReturned: (esrId: string) => void;
+}) {
+  const { saveDBQDraft, validateDBQ, recordExamEncounter, resubmitCorrection, completeClinicalReview, returnClinicalToScheduling } = useWorkspace();
   const { pending, feedback, execute } = useStageAction();
   const { dbq } = detail;
   const [section, setSection] = useState<'report' | 'evidence' | 'diagnostics'>('report');
   const [draft, setDraft] = useState<FieldValues>();
   const [encounterNote, setEncounterNote] = useState('');
+  const [returnOpen, setReturnOpen] = useState(false);
+  const [returnReason, setReturnReason] = useState('');
   const [attestation, setAttestation] = useState<{ versionId: string; draftRevision: number }>();
   const savedVersion = detail.versions.find(version => version.id === dbq.currentVersionId);
   const currentAttestation = attestation && savedVersion
@@ -119,21 +125,62 @@ function ClinicalReport({ detail, onSigned }: { detail: ClinicalDetail; onSigned
           onChange={event => setAttestation(event.target.checked && savedVersion
             ? { versionId: savedVersion.id, draftRevision: savedVersion.version } : undefined)} />
           I attest to the accuracy of this saved report revision.</label>
-        <StageActions><button type="button" className="intake-primary" disabled={!ready || !currentAttestation || pending}
+        <StageActions>
+          <button type="button" className="intake-text-action" disabled={pending} onClick={() => setReturnOpen(v => !v)}>
+            <ArrowLeft size={15} /> {returnOpen ? 'Cancel return' : 'Send back to Stage 3 (Rework)'}
+          </button>
+          <button type="button" className="intake-primary" disabled={!ready || !currentAttestation || pending}
           onClick={() => {
             if (ready && currentAttestation) {
               void execute(() => completeClinicalReview(dbq.id, { ...currentAttestation, confirmed: true }),
                 result => onSigned(resultEntityId(result.value)));
             }
-          }}>Record sign-off and send to QA <ArrowRight size={16} /></button></StageActions>
+          }}>Record sign-off and send to QA <ArrowRight size={16} /></button>
+        </StageActions>
+        {returnOpen && (
+          <div className="sched-coordination-box" style={{ marginTop: 10 }}>
+            <label className="intake-field">
+              Reason for returning to Stage 3 (Scheduling)
+              <input
+                type="text"
+                value={returnReason}
+                maxLength={500}
+                onChange={e => setReturnReason(e.target.value)}
+                placeholder="e.g. Reschedule examiner, wrong modality/facility, or missing diagnostic capability…"
+                disabled={pending}
+              />
+            </label>
+            <StageActions>
+              <button
+                type="button"
+                className="intake-secondary"
+                disabled={pending}
+                onClick={() => void execute(
+                  () => returnClinicalToScheduling(detail.examId || dbq.id, returnReason.trim() || 'Returned from Stage 4 for Stage 3 scheduling rework.'),
+                  () => { setReturnOpen(false); setReturnReason(''); onReturned(dbq.esrId); },
+                )}
+              >
+                <ArrowLeft size={15} /> Confirm Return to Stage 3
+              </button>
+            </StageActions>
+          </div>
+        )}
       </>}
     </div>
   </>;
 }
 
 export function ClinicalPage(props: StageProps) {
-  const [handoff, setHandoff] = useState<{esrId: string; entityId?: string}>();
+  const [handoff, setHandoff] = useState<{ stage: 'Internal QA' | 'Scheduling'; esrId: string; entityId?: string }>();
   return <StageWorkbench {...props} stage="Clinical Evaluation" title="Clinical work queue" description="Review the examination, complete the report and release the signed version to Internal QA."
-    handoff={handoff && <StageHandoff stage="Internal QA" esrId={handoff.esrId} entityId={handoff.entityId} onNavigate={props.onNavigate}>Signed report sent to Internal QA</StageHandoff>}
-    render={(detail: ClinicalDetail) => <ClinicalReport detail={detail} onSigned={entityId => setHandoff({ esrId: detail.dbq.esrId, entityId })} />} />;
+    handoff={handoff && <StageHandoff stage={handoff.stage} esrId={handoff.esrId} entityId={handoff.entityId} onNavigate={props.onNavigate}>
+      {handoff.stage === 'Scheduling' ? 'Returned to Stage 3 (Scheduling) for rework' : 'Signed report sent to Internal QA'}
+    </StageHandoff>}
+    render={(detail: ClinicalDetail) => (
+      <ClinicalReport
+        detail={detail}
+        onSigned={entityId => setHandoff({ stage: 'Internal QA', esrId: detail.dbq.esrId, entityId })}
+        onReturned={esrId => setHandoff({ stage: 'Scheduling', esrId })}
+      />
+    )} />;
 }

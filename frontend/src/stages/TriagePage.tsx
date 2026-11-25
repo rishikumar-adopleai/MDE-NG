@@ -1159,7 +1159,9 @@ export function TriagePage({
                 <h3><Sparkles size={16} /> Overall Medical History Summary</h3>
                 <div className="triage-overview-actions">
                   <span className="triage-provider-tag">
-                    {activeCase.aiProvider === 'azure-openai' ? 'AI Summary + Citations' : 'Verified NLP Chronology'}
+                    {activeCase.aiProvider && activeCase.aiProvider !== 'local'
+                      ? `AI Summary (${activeCase.aiProvider})`
+                      : 'Verified NLP Chronology'}
                   </span>
                   <button
                     type="button"

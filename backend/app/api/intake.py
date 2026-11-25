@@ -18,6 +18,7 @@ from app.models import OutboxJob
 from app.services.intake_processing import MAX_FILE_BYTES
 from app.services.intake_view import with_intake_views
 from app.services.intake_store import add_case, queue_document, record, save_state, timestamp, touch
+from app.services.scheduling import normalize_state_code
 from app.services.stage_ai import generate_stage_review, select_work, stage_sources
 from app.services.triage import with_triage_view
 from app.agents.intake.parser import MAX_XML_BYTES, import_exam_request, parse_exam_request, read_bundled_request, scenario_files
@@ -171,8 +172,72 @@ def open_case(state: dict, esr_id: str) -> dict:
     return esr
 
 
+def _parse_optional_travel_miles(raw: object) -> int | None:
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if 1 <= raw <= 5000 else None
+    text = str(raw).strip()
+    if not text:
+        return None
+    m = re.match(r"^(\d{1,4})(?:\s*(?:mi|miles?))?$", text, re.IGNORECASE)
+    if not m:
+        return None
+    val = int(m.group(1))
+    return val if 1 <= val <= 5000 else None
+
+
+def _extract_location_and_travel_from_text(combined_text: str) -> tuple[str, str, str, int | None]:
+    """Extract Veteran city, stateCode, postalCode, and travelLimitMiles when explicitly present; never fabricate defaults."""
+    placeholders = {"city", "state", "zip", "zip code", "postal code", "field", "blank", "not", "n/a", "none", "unknown"}
+    city = ""
+    state_code = ""
+    postal_code = ""
+
+    m_full_addr = re.search(
+        r"(?:Address|Location)\s*:\s*([A-Za-z][A-Za-z\s.'-]{1,60}),\s*([A-Z]{2})\s+(\d{5}(?:-\d{4})?)\b",
+        combined_text,
+    )
+    if m_full_addr:
+        c_val = m_full_addr.group(1).strip()
+        if c_val.casefold() not in placeholders:
+            city = c_val[:80]
+            state_code = m_full_addr.group(2).upper()
+            postal_code = m_full_addr.group(3)
+
+    if not city:
+        m_city = re.search(r"(?:Claimant[ \t]+|Veteran[ \t]+)?City[ \t]*:[ \t]*([A-Za-z][A-Za-z .'-]{1,60}?)(?:[ \t]*\||[ \t]*,|[ \t]*\r?\n|$)", combined_text, re.IGNORECASE)
+        if m_city:
+            c_val = m_city.group(1).strip()
+            if c_val.casefold() not in placeholders and not any(c_val.lower().startswith(b) for b in ("state", "zip", "not", "blank")):
+                city = c_val[:80]
+
+    if not state_code:
+        m_state = re.search(r"(?:Claimant[ \t]+|Veteran[ \t]+)?State(?:[ \t]*Code)?[ \t]*:[ \t]*([A-Za-z]{2})\b", combined_text, re.IGNORECASE)
+        if m_state:
+            s_val = m_state.group(1).strip().upper()
+            if s_val.casefold() not in placeholders:
+                state_code = s_val
+
+    if not postal_code:
+        m_zip = re.search(r"(?:ZIP(?:[ \t]*Code)?|Postal[ \t]*Code)[ \t]*:[ \t]*(\d{5}(?:-\d{4})?)\b", combined_text, re.IGNORECASE)
+        if m_zip:
+            postal_code = m_zip.group(1)
+
+    travel_limit_miles = None
+    m_travel = re.search(
+        r"(?:Travel[ \t]*(?:limit|distance|radius)|Max[ \t]*travel(?:[ \t]*distance)?)[ \t]*[:\-][ \t]*(\d{1,4})[ \t]*(?:mi|miles?)?\b",
+        combined_text,
+        re.IGNORECASE,
+    )
+    if m_travel:
+        travel_limit_miles = _parse_optional_travel_miles(m_travel.group(1))
+
+    return city, state_code, postal_code, travel_limit_miles
+
+
 def extract_metadata_from_extracted_files(extracted: list[tuple[str, bytes]]) -> dict:
-    """Extract claimant name, ESR reference, contentions, DBQs, branch, and instructions from uploaded files."""
+    """Extract claimant name, ESR reference, location, travel limit, contentions, DBQs, branch, and instructions from uploaded files."""
     # Detect if payload contains synthetic/simulated markers
     is_simulated_payload = any(
         any(m in fn.lower() for m in ("synthetic", "mde-ng", "mock", "case_"))
@@ -203,6 +268,8 @@ def extract_metadata_from_extracted_files(extracted: list[tuple[str, bytes]]) ->
             "benefitProgram": parsed.program or "Compensation & Pension (C&P Live)",
             "city": parsed.city or "",
             "stateCode": parsed.state_code or "",
+            "postalCode": parsed.postal_code or "",
+            "travelLimitMiles": parsed.travel_limit_miles,
             "contentions": [{"title": c.title, "classification": c.classification or "Direct Service Connection", "forms": list(c.requested_forms)} for c in parsed.contentions],
             "specialInstructions": parsed.special_instructions or "",
             "fileType": f"Folder / Package ({len(extracted)} files including XML)",
@@ -314,13 +381,17 @@ def extract_metadata_from_extracted_files(extracted: list[tuple[str, bytes]]) ->
         if m_inst_gen:
             instructions = m_inst_gen.group(1).strip()
 
+    city, state_code, postal_code, travel_limit_miles = _extract_location_and_travel_from_text(combined_text)
+
     return {
         "claimantName": claimant,
         "esrReference": ref,
         "serviceBranch": branch,
         "benefitProgram": "Compensation & Pension (C&P Live)",
-        "city": "Fairfax",
-        "stateCode": "VA",
+        "city": city,
+        "stateCode": state_code,
+        "postalCode": postal_code,
+        "travelLimitMiles": travel_limit_miles,
         "contentions": contentions,
         "specialInstructions": instructions,
         "fileType": f"Medical Folder ({len(extracted)} files)" if len(extracted) > 1 else extracted[0][0],
@@ -361,6 +432,8 @@ def inspect_esr(
             "benefitProgram": parsed.program or "Compensation & Pension (C&P Live)",
             "city": parsed.city or "",
             "stateCode": parsed.state_code or "",
+            "postalCode": parsed.postal_code or "",
+            "travelLimitMiles": parsed.travel_limit_miles,
             "contentions": [{"title": c.title, "classification": c.classification, "forms": list(c.requested_forms)} for c in parsed.contentions],
             "specialInstructions": parsed.special_instructions or "",
             "fileType": "XML (EMS Examination Request)",
@@ -412,8 +485,10 @@ def inspect_esr(
         "esrReference": metadata["esrReference"],
         "serviceBranch": metadata["serviceBranch"],
         "benefitProgram": metadata["benefitProgram"],
-        "city": metadata.get("city", "Fairfax"),
-        "stateCode": metadata.get("stateCode", "VA"),
+        "city": metadata.get("city", ""),
+        "stateCode": metadata.get("stateCode", ""),
+        "postalCode": metadata.get("postalCode", ""),
+        "travelLimitMiles": metadata.get("travelLimitMiles"),
         "contentions": metadata["contentions"],
         "specialInstructions": metadata["specialInstructions"],
         "fileType": metadata["fileType"],
@@ -437,6 +512,10 @@ def create_esr(
     special_instructions: Annotated[str | None, Form()] = None,
     service_branch: Annotated[str | None, Form()] = None,
     esr_reference: Annotated[str | None, Form()] = None,
+    city: Annotated[str | None, Form()] = None,
+    state_code: Annotated[str | None, Form()] = None,
+    postal_code: Annotated[str | None, Form()] = None,
+    travel_limit_miles: Annotated[int | None, Form()] = None,
     synthetic: Annotated[bool, Form()] = True,
     user: CurrentUser = Depends(intake_actor),
     db: Session = Depends(get_db),
@@ -455,6 +534,14 @@ def create_esr(
     instructions = (special_instructions or "").strip() or metadata["specialInstructions"]
     branch = (service_branch or "").strip() or metadata["serviceBranch"]
     ref = (esr_reference or "").strip() or metadata["esrReference"]
+    resolved_city = (metadata.get("city") or (city or "").strip()) if metadata.get("examManagementRequest") else ((city or "").strip() or metadata.get("city", ""))
+    resolved_state = normalize_state_code((metadata.get("stateCode") or (state_code or "").strip()) if metadata.get("examManagementRequest") else ((state_code or "").strip() or metadata.get("stateCode", "")))
+    resolved_postal = (metadata.get("postalCode") or (postal_code or "").strip()) if metadata.get("examManagementRequest") else ((postal_code or "").strip() or metadata.get("postalCode", ""))
+    resolved_travel_limit = (
+        metadata.get("travelLimitMiles")
+        if metadata.get("examManagementRequest") and metadata.get("travelLimitMiles") is not None
+        else (_parse_optional_travel_miles(travel_limit_miles) or metadata.get("travelLimitMiles"))
+    )
     is_sim = metadata.get("isSimulated", synthetic)
 
     state = get_state(db)
@@ -472,12 +559,25 @@ def create_esr(
     esr["isSimulated"] = is_sim
     if ref:
         esr["sourceReference"] = ref
-    if branch:
-        vet = state["veteransById"].get(esr["veteranId"])
-        if vet:
+    if resolved_postal:
+        esr["postalCode"] = resolved_postal
+    if resolved_travel_limit is not None:
+        esr["travelLimitMiles"] = resolved_travel_limit
+
+    vet = state["veteransById"].get(esr["veteranId"])
+    if vet:
+        if branch:
             vet["serviceGroup"] = branch
-            if ref:
-                vet["claimIdentifier"] = ref
+        if ref:
+            vet["claimIdentifier"] = ref
+        if resolved_city:
+            vet["city"] = resolved_city
+        if resolved_state:
+            vet["stateCode"] = resolved_state
+        if resolved_postal:
+            vet["postalCode"] = resolved_postal
+        if resolved_travel_limit is not None:
+            vet["travelLimitMiles"] = resolved_travel_limit
 
     # Map requested DBQs to each created contention
     for cid in esr.get("contentionIds", []):
@@ -494,8 +594,6 @@ def create_esr(
         doc_ids.append(doc_id)
 
     next_state = save_state(db, state, esr["id"])
-    db.commit()
-    return {"esrId": esr["id"], "documentId": doc_ids[0] if doc_ids else None, "documentIds": doc_ids, "state": with_triage_view(with_intake_views(next_state))}
     db.commit()
     return {"esrId": esr["id"], "documentId": doc_ids[0] if doc_ids else None, "documentIds": doc_ids, "state": with_triage_view(with_intake_views(next_state))}
 
@@ -549,6 +647,9 @@ def receive_exam_management_example(scenario_id: str, user: CurrentUser = Depend
 def receive_exam_management_upload(
     file: UploadFile = File(None),
     files: list[UploadFile] = File(None),
+    city: Annotated[str | None, Form()] = None,
+    state_code: Annotated[str | None, Form()] = None,
+    postal_code: Annotated[str | None, Form()] = None,
     synthetic: Annotated[bool, Form()] = True,
     user: CurrentUser = Depends(intake_actor),
     db: Session = Depends(get_db),
@@ -577,11 +678,23 @@ def receive_exam_management_upload(
     res = receive_exam_management(db, user, xml_filename, xml_content)
     esr_id = res["esrId"]
 
-    # Queue all medical files from the folder/batch (non-XML)
+    # Fill missing address fields from optional form inputs & queue all non-XML medical files
     non_xml_items = [(fn, ct) for fn, ct in extracted if fn != xml_filename and not fn.lower().endswith(".xml")]
-    if non_xml_items:
+    fallback_city = "" if parsed.city else (city or "").strip()
+    fallback_state = "" if parsed.state_code else normalize_state_code(state_code)
+    fallback_postal = "" if parsed.postal_code else (postal_code or "").strip()
+
+    if non_xml_items or fallback_city or fallback_state or fallback_postal:
         state = get_state(db)
         esr = state["esrsById"][esr_id]
+        vet = state["veteransById"].get(esr.get("veteranId"), {})
+        if fallback_city:
+            vet["city"] = fallback_city
+        if fallback_state:
+            vet["stateCode"] = fallback_state
+        if fallback_postal:
+            vet["postalCode"] = fallback_postal
+            esr["postalCode"] = fallback_postal
         now = timestamp()
         doc_ids = []
         for fn, ct in non_xml_items:

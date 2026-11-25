@@ -40,6 +40,7 @@
 .intake-selection li, .intake-receive .intake-synthetic-confirmation { display: flex; align-items: baseline; gap: 8px; margin: 4px 0; }
 .intake-review-facts { display: flex; gap: 16px 32px; flex-wrap: wrap; }
 .intake-review-facts strong { display: block; font-size: 14px; }
+.intake-location-row { display: grid; grid-template-columns: 1fr 90px 130px; gap: 10px; }
 .intake-preview-status { padding: 11px 14px; border-left: 3px solid var(--intake-accent); background: #f1f6f3; }
 .intake-receive .intake-field { display: grid; gap: 6px; margin: 0; font-weight: 650; }
 .intake-receive .intake-field :is(input, textarea, select) { font-weight: 400; }
@@ -72,6 +73,7 @@
   .intake-page :is(.intake-library-filter, .intake-correct-category) { align-items: stretch; flex-direction: column; gap: 4px; }
   .intake-receive footer button { flex: 1 1 auto; }
   .intake-receive form { gap: 14px; }
+  .intake-location-row { grid-template-columns: 1fr; }
 }
 
 
@@ -87,6 +89,7 @@
 .triage-overview-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
 .triage-kpi-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.triage-kpi-strip.sched-kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .triage-kpi-box { padding: 12px 16px; border: 1px solid #d5e4dd; border-radius: 10px; background: #f8fbf9; display: grid; gap: 4px; }
 .triage-kpi-box span { font-size: 12px; color: #50665e; font-weight: 600; }
 .triage-kpi-box strong { font-size: 22px; color: #0f533c; letter-spacing: -0.02em; }
@@ -163,6 +166,38 @@
 .triage-unverified-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
 .triage-ack-checkbox { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 8px; background: #fffbeb; border: 1px solid #fde68a; color: #78350f; font-size: 12.5px; line-height: 1.4; cursor: pointer; }
 .triage-ack-checkbox input[type="checkbox"] { width: 16px; height: 16px; min-width: 16px; margin: 2px 0 0; accent-color: var(--teal); cursor: pointer; flex: none; }
+.sched-mode-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.sched-mode-bar h3 { margin: 0; font-size: 16px; }
+.sched-mode-toggle { display: inline-flex; gap: 4px; padding: 4px; background: #f3f7f6; border: 1px solid var(--intake-line); border-radius: 10px; }
+.sched-mode-toggle button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 0; border-radius: 7px; background: transparent; font-size: 12.5px; font-weight: 600; color: var(--intake-muted); cursor: pointer; }
+.sched-mode-toggle button.is-active { background: var(--intake-accent); color: #fff; }
+.sched-req-meta { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--intake-muted); }
+.sched-finder-trigger { display: flex; justify-content: flex-start; padding-top: 4px; }
+.sched-finder-panel { border: 1px solid var(--intake-line); border-radius: 10px; padding: 14px; background: #f8fbfa; display: grid; gap: 12px; }
+.sched-finder-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.sched-finder-head small { display: block; color: var(--intake-muted); font-size: 12px; }
+.sched-loading-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--intake-accent); padding: 6px 0; }
+.sched-steps-grid { display: grid; gap: 12px; }
+.sched-step-block { display: grid; gap: 6px; }
+.sched-step-block select { width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid #bdcfc8; background: #fff; color: var(--intake-ink); font-size: 13px; }
+.sched-step-kicker { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; color: var(--intake-accent); }
+.sched-excluded-wrap { display: grid; gap: 6px; }
+.sched-excluded-list { margin: 0; padding-left: 18px; font-size: 12px; color: #991b1b; display: grid; gap: 3px; }
+.sched-hold-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.sched-license-ok { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: #065f46; }
+.sched-appt-card { border: 1px solid var(--intake-line); border-radius: 10px; padding: 12px 14px; background: #fff; display: grid; gap: 10px; }
+.sched-appt-card.is-confirmed { background: #ecfdf5; border-color: #a7f3d0; }
+.sched-appt-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.sched-appt-head small { display: block; color: var(--intake-muted); font-size: 12.5px; margin-top: 2px; }
+.sched-coordination-box { display: grid; gap: 10px; padding-top: 8px; border-top: 1px dashed var(--intake-line); }
+.sched-coord-row { display: grid; grid-template-columns: 110px 150px 1fr auto; gap: 8px; }
+.sched-coord-row select, .sched-coord-row input { padding: 7px 10px; border-radius: 8px; border: 1px solid #bdcfc8; font-size: 13px; background: #fff; color: var(--intake-ink); }
+.sched-outreach-count { font-size: 12px; color: var(--intake-muted); }
+.sched-coord-actions { display: flex; justify-content: flex-end; align-items: center; gap: 12px; }
+.sched-location-wrap { display: grid; gap: 6px; }
+.sched-location-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.sched-location-bar input { padding: 5px 8px; border-radius: 7px; border: 1px solid #bdcfc8; font-size: 12.5px; background: #fff; color: var(--intake-ink); width: 140px; }
+.sched-location-bar input:nth-child(2) { width: 120px; }
 
 .triage-pathway-proposal { padding: 12px 14px; border-radius: 10px; border: 1px solid #c3ded3; background: #f1f8f5; display: grid; gap: 6px; }
 .triage-pathway-proposal.pathway-requires-clinical-review { border-color: #e9d29a; background: #fffaf0; }
@@ -215,5 +250,5 @@
 .triage-drawer-text { margin: 0; padding: 14px; border-radius: 10px; border: 1px solid #dce8e2; background: #fbfdfc; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; color: #1f332c; }
 
 @media (max-width: 720px) {
-  .triage-kpi-strip { grid-template-columns: 1fr; }
+  .triage-kpi-strip, .triage-kpi-strip.sched-kpi-strip { grid-template-columns: 1fr; }
 }
