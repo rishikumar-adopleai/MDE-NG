@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AppointmentLogistics, Communication, DiagnosticReportedFlag, DocumentReviewDecision, EntityId, FieldValues, Modality, SimulatedDeliveryResponse, StageKey, TriagePlan } from '../domain/model';
-import { generateStageReview, intakeRequest, loadRuntime, loadWorkItem, loadWorkspace, receiveIntakeSample, receiveIntakeXml, requestIntakeDocumentReview, sendWorkspaceCommand, WorkspaceApiError, type AIStageReview, type WorkspacePayload, type WorkspaceRuntime } from '../data/repositories/workspaceApi';
+import { generateStageReview, intakeRequest, loadRuntime, loadWorkItem, loadWorkspace, receiveIntakeSample, receiveIntakeXml, requestIntakeDocumentReview, sendWorkspaceCommand, triggerTriagePrepare, WorkspaceApiError, type AIStageReview, type WorkspacePayload, type WorkspaceRuntime } from '../data/repositories/workspaceApi';
 
 export type CommandResult = { ok: true; message: string; value?: unknown } | { ok: false; message: string };
 
@@ -21,6 +21,9 @@ type WorkspaceContextValue = {
   approveTriagePlan: (id: EntityId, plan: TriagePlan) => Promise<CommandResult>;
   requestTriageClarification: (id: EntityId, note: string) => Promise<CommandResult>;
   resumeTriageReview: (id: EntityId, note: string) => Promise<CommandResult>;
+  authorizeTriageAce: (id: EntityId, rationale: string) => Promise<CommandResult>;
+  escalateDistressAlert: (id: EntityId, note: string) => Promise<CommandResult>;
+  prepareTriageDossier: (esrId: EntityId, force?: boolean) => Promise<CommandResult>;
   getWorkItem: <T>(id: string, signal?: AbortSignal) => Promise<T>;
   requestStageReview: (stage: StageKey, entityId: string, signal?: AbortSignal) => Promise<AIStageReview>;
   reviewIntakeDocuments: (esrId: string, signal: AbortSignal, disposition?: { reviewId: string; decision: DocumentReviewDecision }) => Promise<void>;
@@ -163,6 +166,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     acceptState(result.state, version);
   }, [acceptState]);
 
+  const prepareTriageDossier = useCallback(async (esrId: EntityId, force = false): Promise<CommandResult> => {
+    try {
+      const version = sessionVersion.current;
+      const result = await triggerTriagePrepare(esrId, force);
+      acceptState(result.state, version);
+      return { ok: true, message: 'Clinical dossier and examination plans updated.' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Unable to prepare clinical triage dossier.' };
+    }
+  }, [acceptState]);
+
   const value = useMemo<WorkspaceContextValue>(() => {
     return {
       state, loading, storageError, runtime, importIntakeDocument, retryIntakeDocument, receiveIntakeExample,
@@ -175,6 +189,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       approveTriagePlan: (id, plan) => run('approveTriagePlan', [id, plan], 'Examination plan approved and sent to Scheduling.'),
       requestTriageClarification: (id, note) => run('requestTriageClarification', [id, note], 'Clarification request recorded.'),
       resumeTriageReview: (id, note) => run('resumeTriageReview', [id, note], 'Clarification response recorded. Review reopened.'),
+      authorizeTriageAce: (id, rationale) => run('authorizeTriageAce', [id, rationale], 'ACE eligibility authorized by clinician for this examination.'),
+      escalateDistressAlert: (id, note) => run('escalateDistressAlert', [id, note], 'Clinical safety alert escalated to authorized staff.'),
+      prepareTriageDossier,
       getWorkItem: loadWorkItem,
       requestStageReview: generateStageReview,
       reviewIntakeDocuments,
@@ -209,7 +226,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       recordSimulatedContentionCancellation: (esrId, contentionId, reason) => run('recordSimulatedContentionCancellation', [esrId, contentionId, reason], 'Contention cancellation recorded.'),
       closeESR: (id, note) => run('closeESR', [id, note], 'ESR closure recorded.'),
     };
-  }, [state, loading, storageError, runtime, importIntakeDocument, retryIntakeDocument, receiveIntakeExample, reviewIntakeDocuments, run]);
+  }, [state, loading, storageError, runtime, importIntakeDocument, retryIntakeDocument, receiveIntakeExample, reviewIntakeDocuments, prepareTriageDossier, run]);
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

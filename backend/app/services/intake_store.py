@@ -18,6 +18,7 @@ from app.services.intake_view import EVIDENCE_CATEGORIES, READABLE_EVIDENCE_BLOC
 from app.services.workspace_store import get_state, save_next_state
 
 TASK_NAME = "intake.process_document"
+TRIAGE_TASK_NAME = "triage.prepare_case"
 logger = logging.getLogger(__name__)
 
 
@@ -174,6 +175,8 @@ def queue_document(db: Session, state: dict, esr: dict, filename: str, content: 
     for contention_id in esr["contentionIds"]:
         contention = state["contentionsById"][contention_id]
         touch(contention, now, evidenceDocumentIds=[*contention["evidenceDocumentIds"], doc_id])
+    from app.services.triage import invalidate_stale_triage_plans
+    invalidate_stale_triage_plans(state, esr["id"], now, f"New evidence document '{filename}' queued; re-triage required.")
 
     if is_duplicate:
         # Create an actionable exception for staff review as required by the Stage 1 specification
@@ -199,19 +202,19 @@ def queue_document(db: Session, state: dict, esr: dict, filename: str, content: 
     return doc_id
 
 
-def claim_job() -> tuple[str, str, dict] | None:
+def claim_job() -> tuple[str, str, str, dict] | None:
     now = int(time.time())
     with SessionLocal() as db:
         candidate = db.execute(
-            select(OutboxJob.id, OutboxJob.status).where(
-                OutboxJob.task_name == TASK_NAME,
+            select(OutboxJob.id, OutboxJob.task_name, OutboxJob.status).where(
+                OutboxJob.task_name.in_((TASK_NAME, TRIAGE_TASK_NAME)),
                 or_(OutboxJob.status == "queued",
                     and_(OutboxJob.status.like("run:%"), OutboxJob.status <= f"run:{now:010d}")),
             ).order_by(OutboxJob.created_at).limit(1)
         ).first()
         if not candidate:
             return None
-        job_id, status = candidate
+        job_id, task_name, status = candidate
         lease = f"run:{now + 180:010d}"
         result = db.execute(update(OutboxJob).where(OutboxJob.id == job_id, OutboxJob.status == status)
                             .values(status=lease))
@@ -219,7 +222,7 @@ def claim_job() -> tuple[str, str, dict] | None:
             return None
         payload = db.get(OutboxJob, job_id).payload
         db.commit()
-        return job_id, lease, payload
+        return job_id, task_name, lease, payload
 
 
 def finish_job(job_id: str, lease: str, document_id: str, result: dict) -> None:
@@ -247,6 +250,8 @@ def finish_job(job_id: str, lease: str, document_id: str, result: dict) -> None:
                     facts[key] = result[key]
             pages = result.get("excerpts", [])
             facts["sources"] = pages
+            if result.get("allPages"):
+                facts["allPages"] = result["allPages"]
             excerpts = [
                 {"id": f"{document_id}-{key}-{page['page']}", "pageNumber": page["page"],
                  "contentionId": key, "text": page["text"]}
@@ -304,6 +309,8 @@ def finish_job(job_id: str, lease: str, document_id: str, result: dict) -> None:
             pending = any(state["evidenceDocumentsById"][item]["classificationStatus"] in {"queued", "processing"}
                           for item in esr["evidenceDocumentIds"])
             touch(esr, now, intakeStatus="processing" if pending else "requires-attention")
+            from app.services.triage import invalidate_stale_triage_plans
+            invalidate_stale_triage_plans(state, esr["id"], now, f"Document '{doc.get('title', document_id)}' updated; re-triage required.")
             activity(state, esr["id"], document_id, "intake-document-reviewed", "intake-worker", now)
             try:
                 save_state(db, state, esr["id"])
@@ -319,11 +326,149 @@ def finish_job(job_id: str, lease: str, document_id: str, result: dict) -> None:
     logger.warning("Intake processing result will retry after the job lease expires.")
 
 
+def enqueue_triage_job(db: Session, esr_id: str, *, force: bool = False, evidence_digest: str = "") -> bool:
+    """Idempotently enqueue a Stage 2 triage preparation job unless an active one is already queued/running."""
+    active_jobs = db.execute(
+        select(OutboxJob).where(
+            OutboxJob.task_name == TRIAGE_TASK_NAME,
+            or_(OutboxJob.status == "queued", OutboxJob.status.like("run:%")),
+        )
+    ).scalars().all()
+    for existing in active_jobs:
+        payload = existing.payload or {}
+        if payload.get("esrId") == esr_id and (not evidence_digest or payload.get("evidenceDigest") == evidence_digest):
+            return False
+    db.add(OutboxJob(
+        task_name=TRIAGE_TASK_NAME,
+        status="queued",
+        payload={
+            "esrId": esr_id,
+            "force": force,
+            "attempts": 0,
+            "maxAttempts": 3,
+            "evidenceDigest": evidence_digest,
+        },
+    ))
+    return True
+
+
+def finish_triage_job(job_id: str, lease: str, esr_id: str, *, force: bool = False) -> None:
+    from app.services.triage_pipeline import run_triage_pipeline_for_state
+
+    # Step 1: Mark processing state visible to UI immediately
+    for _ in range(3):
+        with SessionLocal() as db:
+            job = db.get(OutboxJob, job_id)
+            if not job or job.status != lease:
+                return
+            state = get_state(db)
+            esr = state["esrsById"].get(esr_id)
+            if esr is None:
+                job.status = "completed"
+                db.commit()
+                return
+            now = timestamp()
+            touch(esr, now, triageProcessing={"status": "processing", "startedAt": now})
+            try:
+                save_state(db, state, esr_id)
+                db.commit()
+                break
+            except HTTPException as exc:
+                if exc.status_code != 409:
+                    raise
+
+    # Step 2: Run Stage 2 NLP + Search + Rules + LLM outside DB transaction, then persist atomically
+    with SessionLocal() as db:
+        snapshot_state = get_state(db)
+    allow_llm = settings.intake_provider == "azure-openai"
+    computed_state = dict(snapshot_state)
+    try:
+        dossier = run_triage_pipeline_for_state(computed_state, esr_id, allow_llm=allow_llm, force=force)
+    except Exception as exc:
+        logger.exception("Stage 2 triage job failed for ESR %s", esr_id)
+        with SessionLocal() as db:
+            job = db.get(OutboxJob, job_id)
+            if not job or job.status != lease:
+                return
+            payload = dict(job.payload or {})
+            attempts = int(payload.get("attempts", 0)) + 1
+            max_attempts = int(payload.get("maxAttempts", 3))
+            payload["attempts"] = attempts
+            payload["lastError"] = str(exc)[:300]
+            job.payload = payload
+            if attempts < max_attempts:
+                backoff_sec = min(300, 15 * (2 ** (attempts - 1)))
+                job.status = f"run:{int(time.time()) + backoff_sec:010d}"
+            else:
+                job.status = "dead-letter"
+                state = get_state(db)
+                if esr := state.get("esrsById", {}).get(esr_id):
+                    now = timestamp()
+                    touch(esr, now, triageProcessing={
+                        "status": "failed",
+                        "failedAt": now,
+                        "error": str(exc)[:300],
+                        "retryable": True,
+                    })
+                    try:
+                        save_state(db, state, esr_id)
+                    except HTTPException:
+                        pass
+            db.commit()
+        return
+
+    for _ in range(4):
+        with SessionLocal() as db:
+            job = db.get(OutboxJob, job_id)
+            if not job or job.status != lease:
+                return
+            state = get_state(db)
+            esr = state["esrsById"].get(esr_id)
+            if esr is None:
+                job.status = "completed"
+                db.commit()
+                return
+            now = timestamp()
+            if dossier:
+                facts_store = state.setdefault("clinicalFactsById", {})
+                for k in [key for key, row in facts_store.items() if row.get("esrId") == esr_id]:
+                    del facts_store[k]
+                for k, row in (computed_state.get("clinicalFactsById") or {}).items():
+                    if row.get("esrId") == esr_id:
+                        facts_store[k] = row
+                state.setdefault("triageDossiersByEsrId", {})[esr_id] = dossier
+                touch(esr, now, triageProcessing={
+                    "status": "completed",
+                    "completedAt": now,
+                    "sourceDigest": dossier.get("sourceDigest", ""),
+                    "factCount": dossier.get("factCount", 0),
+                    "aiProvider": dossier.get("aiProvider", "local"),
+                    "ruleVersion": dossier.get("ruleVersion", ""),
+                })
+                activity(state, esr_id, esr_id, "triage-dossier-prepared", "triage-worker", now)
+            else:
+                touch(esr, now, triageProcessing={"status": "completed", "completedAt": now})
+            try:
+                save_state(db, state, esr_id)
+            except HTTPException as exc:
+                if exc.status_code != 409:
+                    raise
+                continue
+            changed = db.execute(update(OutboxJob).where(OutboxJob.id == job_id, OutboxJob.status == lease)
+                                 .values(status="completed"))
+            if changed.rowcount == 1:
+                db.commit()
+            return
+
+
 def process_next_job() -> bool:
     claimed = claim_job()
     if not claimed:
         return False
-    job_id, lease, payload = claimed
+    job_id, task_name, lease, payload = claimed
+    if task_name == TRIAGE_TASK_NAME:
+        finish_triage_job(job_id, lease, payload["esrId"], force=bool(payload.get("force")))
+        return True
     try:
         result = process_document(
             payload["filename"],
@@ -464,9 +609,13 @@ def apply_intake_command(state: dict, action: str, args: list, actor: str) -> di
     else:
         if not view["canValidate"]:
             raise HTTPException(422, view["blocker"])
-        touch(esr, now, intakeStatus="ready-for-triage")
+        touch(esr, now, intakeStatus="ready-for-triage",
+              triageProcessing={"status": "queued", "queuedAt": now})
         event = "intake-validated"
 
+    from app.services.triage import invalidate_stale_triage_plans
+    if event in {"intake-exception-resolved", "intake-document-reviewed"}:
+        invalidate_stale_triage_plans(state, esr_id, now, "Linked evidence changed in Intake; re-triage required.")
     activity(state, esr_id, object_id, event, actor, now)
     refresh_intake_work(state, esr_id, now)
     state.update(revision=state["revision"] + 1, updatedAt=now)

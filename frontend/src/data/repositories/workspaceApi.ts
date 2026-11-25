@@ -110,3 +110,10 @@ export function requestIntakeDocumentReview(esrId: string, signal: AbortSignal, 
     body: disposition && JSON.stringify(disposition),
   });
 }
+
+export function triggerTriagePrepare(esrId: string, force = false) {
+  return request<{ ok: boolean; esrId: string; state: WorkspacePayload }>(
+    `/triage/esrs/${encodeURIComponent(esrId)}/prepare?force=${force ? 'true' : 'false'}`,
+    { method: 'POST' },
+  );
+}

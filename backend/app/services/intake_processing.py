@@ -300,7 +300,7 @@ def azure_suggest(sample: list[dict]) -> ReviewSuggestion:
         raise DocumentProcessingError("The AI summary contained invalid or missing citations.") from exc
 
 
-def azure_review_completion(schema_name: str, schema: dict, instructions: str, sources: list[dict]) -> str:
+def azure_review_completion(schema_name: str, schema: dict, instructions: str, sources: list[dict], *, max_tokens: int = 700) -> str:
     endpoint = settings.azure_openai_endpoint.rstrip("/")
     if not endpoint.endswith("/openai/v1"):
         endpoint += "/openai/v1"
@@ -313,13 +313,13 @@ def azure_review_completion(schema_name: str, schema: dict, instructions: str, s
             {"role": "system", "content": instructions},
             {"role": "user", "content": json.dumps(sources, ensure_ascii=False)},
         ],
-        "max_completion_tokens": 700,
+        "max_completion_tokens": max_tokens,
         "response_format": {"type": "json_schema", "json_schema": {
             "name": schema_name, "strict": True, "schema": schema,
         }},
     }
     try:
-        with httpx.Client(timeout=35, follow_redirects=False) as client:
+        with httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0), follow_redirects=False) as client:
             response = client.post(
                 f"{endpoint}/chat/completions", json=request,
                 headers={"api-key": key.get_secret_value()},
@@ -995,11 +995,13 @@ def process_document(filename: str, content: bytes, expected_claimant: str | Non
     final_state = intake_workflow_graph.invoke(initial_state)
 
     pages = final_state.get("pages", {})
+    all_pages = [{"page": p, "text": txt[:6000]} for p, txt in sorted(pages.items()) if txt]
     ret = {
         "pageCount": len(pages),
         "unreadablePages": final_state.get("unreadable_pages", 0),
         "readablePages": final_state.get("readable_pages", 0),
         "excerpts": final_state.get("excerpts", []),
+        "allPages": all_pages,
         "category": final_state.get("category", "other"),
         "summary": final_state.get("summary", ""),
         "sections": final_state.get("sections", []),

@@ -10,11 +10,12 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import CurrentUser, get_current_user
-from app.models import IdempotencyRecord
-from app.services.intake_store import INTAKE_COMMANDS, apply_intake_command
+from app.models import IdempotencyRecord, OutboxJob
+from app.services.intake_store import INTAKE_COMMANDS, TRIAGE_TASK_NAME, apply_intake_command, enqueue_triage_job
 from app.services.intake_view import with_intake_views
 from app.services.stage_ai import STAGE_TASKS, generate_stage_review
 from app.services.triage import TRIAGE_COMMANDS, apply_triage_command, with_triage_view
+from app.services.triage_pipeline import run_triage_pipeline_for_state
 from app.services.va_dbq_catalog import reference_forms
 from app.services.workspace_store import get_state, run_engine, save_next_state
 
@@ -143,9 +144,53 @@ def apply_command(
     if "error" in outcome:
         raise HTTPException(422, outcome["error"])
     next_state = outcome["state"]
+    if body.action == "validateIntake" and body.args and isinstance(body.args[0], str):
+        esr_id = body.args[0]
+        enqueue_triage_job(db, esr_id, force=True)
     save_next_state(db, body.revision, next_state)
     db.add(IdempotencyRecord(key=str(idempotency_key), response_json={
         "fingerprint": fingerprint, "value": outcome["value"],
     }))
     db.commit()
     return {**outcome, "state": with_triage_view(with_intake_views(next_state))}
+
+
+@router.post("/triage/esrs/{esr_id}/prepare")
+def prepare_triage_dossier(
+    esr_id: str,
+    force: bool = False,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(workspace_reader),
+) -> dict:
+    if settings.app_env != "dev":
+        raise HTTPException(503, "This workflow action is unavailable.")
+    if user.role not in {"case-builder", "intake", "clinician", "admin"}:
+        raise HTTPException(403, "This role cannot prepare triage dossiers.")
+    from app.services.intake_store import timestamp, touch
+
+    for _ in range(3):
+        state = get_state(db)
+        esr = state.get("esrsById", {}).get(esr_id)
+        if not esr or esr.get("intakeStatus") not in {"ready-for-triage", "completed"}:
+            raise HTTPException(404, "Validated ESR not found in Medical Triage.")
+        revision = state["revision"]
+        run_triage_pipeline_for_state(state, esr_id, allow_llm=(settings.intake_provider == "azure-openai"), force=force)
+        dossier = (state.get("triageDossiersByEsrId") or {}).get(esr_id) or {}
+        now = timestamp()
+        touch(esr, now, triageProcessing={
+            "status": "completed",
+            "completedAt": now,
+            "sourceDigest": dossier.get("sourceDigest", ""),
+            "factCount": dossier.get("factCount", 0),
+            "aiProvider": dossier.get("aiProvider", "local"),
+            "ruleVersion": dossier.get("ruleVersion", ""),
+        })
+        try:
+            save_next_state(db, revision, state)
+            db.commit()
+            return {"ok": True, "esrId": esr_id, "state": with_triage_view(with_intake_views(state))}
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            db.rollback()
+    raise HTTPException(409, "The workspace changed while preparing triage. Please retry.")

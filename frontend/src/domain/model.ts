@@ -734,23 +734,181 @@ export interface TriagePlan {
   dbqs: string[];
   diagnostics: string[];
   rationale: string;
+  scopeChangeAuthorized?: boolean;
+  remandAuthorizationReference?: string;
+  unverifiedRuleAcknowledged?: boolean;
+}
+
+export interface TriageMatchedEvidence {
+  documentId: EntityId;
+  documentTitle: string;
+  category: string;
+  page: number;
+  clinicalDate: string;
+  matchedTerms: string[];
+  excerpt: string;
+}
+
+export interface TriageMetric {
+  value: string;
+  label: string;
+  date: string;
+  source: string;
+}
+
+export interface TriageMedicalCode {
+  system: string;
+  code: string;
+  display: string;
+  bodyPart?: string;
+  laterality?: string;
+  examCode?: string;
+  kind?: string;
+}
+
+export interface TriageEvidenceGap {
+  id: string;
+  severity: 'critical' | 'warning' | 'info';
+  gapGroup?: 'blocking-issue' | 'clinical-review-requirement' | 'collect-during-exam';
+  category: string;
+  message: string;
+  recommendedAction: string;
+}
+
+export interface TriageContentionDossier {
+  contentionId: EntityId;
+  title: string;
+  aiSummary: string;
+  citations: string[];
+  summaryProvider: string;
+  searchTermsUsed: string[];
+  usedFallback: boolean;
+  matchedEvidence: TriageMatchedEvidence[];
+  extractedMetrics: TriageMetric[];
+  medicalCodes: TriageMedicalCode[];
+  factsCount: number;
+  negatedCount: number;
+  examSuggestion: {
+    examCode?: string;
+    vaRequestedDbqs?: string[];
+    canonicalVaDbqs?: string[];
+    suggestedDbqs?: string[];
+    dbqMatchSource?: string;
+    secondaryRecommendations?: string[];
+    secondaryDbqs?: string[];
+    specialty?: string;
+    credentials?: string[];
+    qualificationVerification?: string;
+    ruleSourceReference?: string;
+    isDynamicUnmapped?: boolean;
+    ruleVerificationStatus?: 'verified' | 'unverified-requires-review';
+    unverifiedReasons?: string[];
+  };
+  rulesEval: {
+    evidenceGaps?: TriageEvidenceGap[];
+    suggestedDiagnostics?: string[];
+    vaSpecifiedPathway?: string;
+    permittedModalities?: string[];
+    modalityEligibilityReasons?: Record<string, string>;
+    aceEligible?: boolean;
+    aceEligibilityReason?: string;
+    ruleVerificationStatus?: 'verified' | 'unverified-requires-review';
+    proposedPathway?: string;
+    proposedModality?: string;
+    pathwaySummary?: string;
+    pathwayReason?: string;
+    ruleReference?: string;
+    requiresConfirmation?: boolean;
+    aceCandidate?: boolean;
+  };
+}
+
+export interface TriageRowView {
+  contentionId: EntityId;
+  esrId: EntityId;
+  priority: ESR['priority'];
+  documentIds: EntityId[];
+  readableEvidence: boolean;
+  requestedDbqs?: string[];
+  awaitingResponse: boolean;
+  aceAuthorized?: boolean;
+  aceAuthorizationReference?: string;
+  triageStaleReason?: string;
+  pathwaysByExam: Record<string, Modality[]>;
+  initialPlan: TriagePlan;
+  specialInstructions?: string;
+  serviceBranch?: string;
+  isSimulated?: boolean;
+  dossier?: TriageContentionDossier;
+}
+
+export interface TriageCaseContention {
+  index: number;
+  contentionId: EntityId;
+  title: string;
+  status: ContentionStatus;
+  requestedDbqs: string[];
+  aceAuthorized: boolean;
+  aceAuthorizationReference?: string;
+  approvedRequirement?: ExaminationRequirement | null;
+  row?: TriageRowView | null;
+  dossier?: TriageContentionDossier;
+}
+
+export interface TriageCaseView {
+  esrId: EntityId;
+  claimantName: string;
+  initials: string;
+  claimIdentifier: string;
+  serviceBranch: string;
+  benefitProgram: string;
+  priority: ESR['priority'];
+  specialInstructions: string;
+  isSimulated: boolean;
+  processing: {
+    status: 'queued' | 'processing' | 'completed' | 'failed';
+    queuedAt?: string;
+    startedAt?: string;
+    completedAt?: string;
+    failedAt?: string;
+    error?: string;
+    retryable?: boolean;
+    factCount?: number;
+    aiProvider?: string;
+    ruleVersion?: string;
+  };
+  caseOverview: string;
+  caseCitations: string[];
+  aiProvider: string;
+  distressAlerts: {
+    esrId: EntityId;
+    documentId: EntityId;
+    documentTitle: string;
+    pageNumber: number;
+    excerpt: string;
+    reason: string;
+  }[];
+  programFlags: {
+    ruleVersion?: string;
+    effectiveDate?: string;
+    isBddIdes?: boolean;
+    isBvaRemand?: boolean;
+    isTera?: boolean;
+    isInternational?: boolean;
+    programNotices?: { rule: string; severity: string; text: string }[];
+  };
+  requestedCount: number;
+  approvedCount: number;
+  pendingCount: number;
+  clarificationCount: number;
+  contentions: TriageCaseContention[];
 }
 
 export interface TriageWorkspaceView {
-  rows: {
-    contentionId: EntityId;
-    esrId: EntityId;
-    priority: ESR['priority'];
-    documentIds: EntityId[];
-    readableEvidence: boolean;
-    requestedDbqs?: string[];
-    awaitingResponse: boolean;
-    pathwaysByExam: Record<string, Modality[]>;
-    initialPlan: TriagePlan;
-    specialInstructions?: string;
-    serviceBranch?: string;
-    isSimulated?: boolean;
-  }[];
+  rows: TriageRowView[];
+  queueIds?: EntityId[];
+  casesByEsrId?: Record<EntityId, TriageCaseView>;
+  ruleVersion?: string;
   examChoices: {
     code: string;
     title: string;
@@ -758,6 +916,7 @@ export interface TriageWorkspaceView {
     credentials: string[];
     primaryDbq: string;
     dbqs: string[];
+    modalities?: Modality[];
     diagnostics: string[];
   }[];
 }

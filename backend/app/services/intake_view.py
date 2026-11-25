@@ -66,7 +66,7 @@ def public_document(document: dict) -> dict:
     if not processing:
         return document
     facts = {key: processing[key] for key in (
-        "status", "finishedAt", "summary", "retryable", "aiUnavailable", "sources",
+        "status", "finishedAt", "summary", "retryable", "aiUnavailable", "sources", "allPages",
     ) if key in processing}
     facts["provider"] = "ai" if processing.get("provider") == "azure-openai" else "local"
     if "error" in processing:

@@ -11,44 +11,44 @@ import {
 } from '../src/services/workflowService.ts';
 
 const seed = () => createSeedWorkspace();
-const evidence = {title:'EOB.pdf', category:'insurance-financial', classificationStatus:'indexed', pageCount:2, unreadablePageCount:0};
+const evidence = { title: 'EOB.pdf', category: 'insurance-financial', classificationStatus: 'indexed', pageCount: 2, unreadablePageCount: 0 };
 
 test('document summary preserves clinical qualifiers, decimals, and all remaining points', () => {
   const sentences = ['This is not a bill.', 'Two entries are marked paid.', 'The listed amount is $25.00.', 'Dr. Green found no evidence of injury.', 'Remark code PDC is listed.'];
-  const brief = buildEvidenceBrief({...evidence, processing:{provider:'ai', summary:sentences.join(' '), sources:[{page:2,text:'Original page'}]}});
+  const brief = buildEvidenceBrief({ ...evidence, processing: { provider: 'ai', summary: sentences.join(' '), sources: [{ page: 2, text: 'Original page' }] } });
   assert.deepEqual([brief.paragraph, ...brief.points, ...brief.more], sentences);
-  assert.deepEqual(brief.sources, [{page:2,text:'Original page'}]);
+  assert.deepEqual(brief.sources, [{ page: 2, text: 'Original page' }]);
 });
 
 test('local form labels are not a narrative and keyed facts retain their page', () => {
   const raw = 'Name Sex Provider Plan Claim Status Service Paid Due Forms '.repeat(10);
-  const sources = [{page:1,text:raw}, {page:2,text:'This is not a bill\nRemark code: PDC'}];
-  const brief = buildEvidenceBrief({...evidence, processing:{provider:'local', summary:raw, sources}});
+  const sources = [{ page: 1, text: raw }, { page: 2, text: 'This is not a bill\nRemark code: PDC' }];
+  const brief = buildEvidenceBrief({ ...evidence, processing: { provider: 'local', summary: raw, sources } });
   assert.match(brief.paragraph, /insurer/);
   assert.deepEqual(brief.points, ['“This is not a bill” (p. 2)', '“Remark code: PDC” (p. 2)']);
   assert.deepEqual(brief.sources, sources);
-  assert.equal(brief.generated,false);
+  assert.equal(brief.generated, false);
 });
 
 test('pending, empty and unreadable records are distinguished', () => {
-  const unreadable = buildEvidenceBrief({...evidence, unreadablePageCount:1, classificationStatus:'needs-human-review'});
+  const unreadable = buildEvidenceBrief({ ...evidence, unreadablePageCount: 1, classificationStatus: 'needs-human-review' });
   assert.match(unreadable.issues.join(' '), /1 page could not be read/);
   assert.match(unreadable.issues.join(' '), /No source excerpt/);
-  const pending = buildEvidenceBrief({...evidence,classificationStatus:'queued',processing:{provider:'ai',summary:'Old result'}});
+  const pending = buildEvidenceBrief({ ...evidence, classificationStatus: 'queued', processing: { provider: 'ai', summary: 'Old result' } });
   assert.match(pending.paragraph, /awaiting processing/);
   assert.deepEqual(pending.issues, []);
 });
 
 test('section and contention reviews do not borrow another report or contention’s excerpts', () => {
-  const parent = {...evidence, sections:[{title:'A'},{title:'B'}],processing:{provider:'ai',summary:'Whole file.',sources:[{page:1,text:'First'},{page:2,text:'Second'}]}};
-  const section = {...evidence,sectionId:'B',title:'Second report',startPage:2,endPage:2,summary:'Only the second report.'};
-  const brief = buildEvidenceBrief(section,parent);
-  assert.equal(brief.paragraph,section.summary);
-  assert.deepEqual(brief.sources,[{page:2,text:'Second'}]);
-  const doc = {...parent,syntheticExcerpts:[{contentionId:'other',pageNumber:1,text:'Other contention'}]};
-  assert.deepEqual(buildEvidenceBrief(doc, undefined,'current').sources,[]);
-  assert.match(buildEvidenceBrief(doc, undefined,'current').paragraph,/No excerpt is linked/);
-  assert.deepEqual(buildEvidenceBrief(doc, undefined,'other').sources,[{page:1,text:'Other contention'}]);
+  const parent = { ...evidence, sections: [{ title: 'A' }, { title: 'B' }], processing: { provider: 'ai', summary: 'Whole file.', sources: [{ page: 1, text: 'First' }, { page: 2, text: 'Second' }] } };
+  const section = { ...evidence, sectionId: 'B', title: 'Second report', startPage: 2, endPage: 2, summary: 'Only the second report.' };
+  const brief = buildEvidenceBrief(section, parent);
+  assert.equal(brief.paragraph, section.summary);
+  assert.deepEqual(brief.sources, [{ page: 2, text: 'Second' }]);
+  const doc = { ...parent, syntheticExcerpts: [{ contentionId: 'other', pageNumber: 1, text: 'Other contention' }] };
+  assert.deepEqual(buildEvidenceBrief(doc, undefined, 'current').sources, []);
+  assert.match(buildEvidenceBrief(doc, undefined, 'current').paragraph, /No excerpt is linked/);
+  assert.deepEqual(buildEvidenceBrief(doc, undefined, 'other').sources, [{ page: 1, text: 'Other contention' }]);
 });
 const valuesFor = (dbq) => dbq.formType.toLowerCase().includes('opinion')
   ? { ...dbq.values, opinionQuestion: 'Is the condition related to the documented service history?', rationale: 'Revised clinician-authored rationale with the reviewed source references.' }
@@ -208,15 +208,15 @@ function freshSchedulingScope() {
 const localLogistics = { specialTransportRequired: false, specialTransportStatus: 'not-required', consentStatus: 'simulated-recorded', vaPreapprovalStatus: 'not-required', note: 'Local logistics and consent reviewed.' };
 
 test('reserve scheduling requires three valid attempts and preserves local notice evidence', () => {
-  const {state, work, provider, slot} = freshSchedulingScope();
-  let {state: next, appointmentId} = holdAppointment(state, work.entityId, provider.id, slot);
+  const { state, work, provider, slot } = freshSchedulingScope();
+  let { state: next, appointmentId } = holdAppointment(state, work.entityId, provider.id, slot);
   const claimant = next.veteransById[next.esrsById[work.esrId].veteranId];
   claimant.reserveSchedulingAllowed = true;
   claimant.communicationOptIns = ['email'];
   claimant.representativeReference = 'SYN-REP-10';
   next.appointmentsById[appointmentId].outreachWindowOpenedAt = '2000-01-01T00:00:00Z';
   next = recordAppointmentLogistics(next, appointmentId, localLogistics);
-  const log = (channel, attemptedAt, voicemail) => recordOutreach(next, work.esrId, appointmentId, channel, 'no-response', 'Contact attempted locally.', {attemptedAt, voicemail});
+  const log = (channel, attemptedAt, voicemail) => recordOutreach(next, work.esrId, appointmentId, channel, 'no-response', 'Contact attempted locally.', { attemptedAt, voicemail });
   assert.throws(() => log('phone', '2000-01-01T10:00:00Z'), /voicemail/i);
   assert.throws(() => log('sms', '2000-01-01T10:00:00Z'), /opt-in/i);
   next = log('phone', '2000-01-01T10:00:00Z', 'left');
@@ -230,12 +230,12 @@ test('reserve scheduling requires three valid attempts and preserves local notic
   assert.equal(appointment.schedulingMethod, 'reserve');
   assert.equal(appointment.localNotification.representativeReference, 'SYN-REP-10');
   const notices = Object.values(next.communicationsById).filter(entry => entry.appointmentId === appointmentId && entry.channel === 'mail');
-  assert.deepEqual(notices.map(entry => entry.recipient).sort(), ['claimant','representative']);
+  assert.deepEqual(notices.map(entry => entry.recipient).sort(), ['claimant', 'representative']);
 });
 
 test('sign-off checks the stored draft revision in addition to the form version ID', () => {
-  const {state, work, provider, slot} = freshSchedulingScope();
-  let {state: next, appointmentId} = holdAppointment(state, work.entityId, provider.id, slot);
+  const { state, work, provider, slot } = freshSchedulingScope();
+  let { state: next, appointmentId } = holdAppointment(state, work.entityId, provider.id, slot);
   next = recordOutreach(next, work.esrId, appointmentId, 'phone', 'answered', 'Reached synthetic claimant.');
   next = recordAppointmentLogistics(next, appointmentId, localLogistics);
   next = confirmAppointment(next, appointmentId);
@@ -244,16 +244,16 @@ test('sign-off checks the stored draft revision in addition to the form version 
   const values = Object.fromEntries(dbqForm(dbq).filter(item => item.required).map(item => [item.key, item.options?.[0] ?? 'Synthetic response.']));
   next = saveDBQDraft(next, dbq.id, values);
   const draftRevision = next.dbqVersionsById[dbq.currentVersionId].version;
-  assert.throws(() => completeClinicalReview(next, dbq.id, {versionId: dbq.currentVersionId, confirmed: true, draftRevision}), /completed encounter/i);
+  assert.throws(() => completeClinicalReview(next, dbq.id, { versionId: dbq.currentVersionId, confirmed: true, draftRevision }), /completed encounter/i);
   next = recordExamEncounter(next, dbq.id, 'Synthetic encounter completed.');
   for (const orderId of exam.diagnosticOrderIds) {
     next = recordDiagnosticException(next, orderId, 'claimant-declined', 'Diagnostic exception recorded for the fixture.');
   }
-  next = saveDBQDraft(next, dbq.id, {...values, rationale: 'Updated after encounter.'});
-  assert.throws(() => completeClinicalReview(next, dbq.id, {versionId: dbq.currentVersionId, confirmed: true, draftRevision}), /persisted report version/i);
+  next = saveDBQDraft(next, dbq.id, { ...values, rationale: 'Updated after encounter.' });
+  assert.throws(() => completeClinicalReview(next, dbq.id, { versionId: dbq.currentVersionId, confirmed: true, draftRevision }), /persisted report version/i);
   const currentVersion = next.dbqVersionsById[dbq.currentVersionId];
-  assert.throws(() => completeClinicalReview(next, dbq.id, {versionId: currentVersion.id, confirmed: true}), /persisted report version/i);
-  next = completeClinicalReview(next, dbq.id, {versionId: currentVersion.id, confirmed: true, draftRevision: currentVersion.version});
+  assert.throws(() => completeClinicalReview(next, dbq.id, { versionId: currentVersion.id, confirmed: true }), /persisted report version/i);
+  next = completeClinicalReview(next, dbq.id, { versionId: currentVersion.id, confirmed: true, draftRevision: currentVersion.version });
   assert.equal(next.dbqsById[dbq.id].signedVersionId, currentVersion.id);
 });
 

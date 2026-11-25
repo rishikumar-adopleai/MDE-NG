@@ -35,8 +35,11 @@ REQUESTED_FORM_ALIASES = {
 
 @lru_cache(maxsize=1)
 def catalog() -> dict[int, dict]:
-    rows = json.loads(reference_bytes(FORM_INDEX))["documents"]
-    return {int(item["revisionId"]): item for item in rows}
+    try:
+        rows = json.loads(reference_bytes(FORM_INDEX))["documents"]
+        return {int(item["revisionId"]): item for item in rows}
+    except Exception:
+        return {}
 
 
 def catalog_references(labels: list[str]) -> dict[str, dict]:
