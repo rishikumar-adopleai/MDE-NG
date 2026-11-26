@@ -341,7 +341,18 @@ export function IntakePage(props: IntakeProps) {
             <h2 ref={caseHeading} tabIndex={-1} id="intake-case-title">{caseItem.name}</h2>
             <p>{caseItem.exam}</p>
           </div>
-          <span className="intake-case-status"><Status text={view.queueLabel} tone={view.canValidate ? 'green' : caseStateTone(view.queueLabel)} /></span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span className="intake-case-status"><Status text={view.queueLabel} tone={view.canValidate ? 'green' : caseStateTone(view.queueLabel)} /></span>
+            <button
+              type="button"
+              className="intake-icon-button"
+              aria-label="Close case details"
+              title="Close case"
+              onClick={() => onSelect('')}
+            >
+              <X size={18} />
+            </button>
+          </div>
         </header>
 
         <div className="intake-progress-strip">

@@ -1360,6 +1360,7 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
             "endsAt": ends_at,
             "status": "held",
             "outreachLog": [],
+            "history": [{"status": "held", "at": now, "actorId": actor, "note": "Appointment held."}],
         }
         state.setdefault("appointmentsById", {})[appt_id] = appt
         for r in reqs:
@@ -1468,6 +1469,7 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
                     "endsAt": ends_at,
                     "status": "held",
                     "outreachLog": [],
+                    "history": [{"status": "held", "at": now, "actorId": actor, "note": "Coordinated appointment held."}],
                     "coordinatedVisit": True,
                 }
                 new_appts.append((appt_id, appt, req))
@@ -1610,7 +1612,9 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
             if changed.rowcount != 1:
                 raise HTTPException(409, "Held slot could not be locked atomically for confirmation.")
 
-        touch(appt, now, status="confirmed-locally", confirmedAt=now, confirmedBy=actor)
+        appt_history = list(appt.get("history") or [])
+        appt_history.append({"status": "confirmed-locally", "at": now, "actorId": actor, "note": "Appointment confirmed."})
+        touch(appt, now, status="confirmed-locally", confirmedAt=now, confirmedBy=actor, history=appt_history)
         esr_id = appt["esrId"]
         esr = state["esrsById"][esr_id]
         for rid in appt.get("requirementIds", []):
@@ -1619,29 +1623,31 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
             if w := state.get("workItemsById", {}).get(f"work-scheduling-{rid}"):
                 touch(w, now, status="completed")
             exam_id = f"exam-{uuid4().hex[:12]}"
-            state.setdefault("examinationsById", {})[exam_id] = {
+            req_obj = state["examinationRequirementsById"].get(rid) or {}
+            exam_obj = {
                 **record(exam_id, now),
                 "esrId": esr_id,
                 "requirementId": rid,
+                "requirementIds": [rid],
+                "contentionIds": list(req_obj.get("contentionIds") or []),
                 "appointmentId": appt_id,
+                "appointmentIds": [appt_id],
                 "examinerId": appt["examinerId"],
                 "modality": appt["modality"],
+                "requiredDbqIds": [],
+                "diagnosticOrderIds": [],
                 "status": "scheduled",
             }
-            w4_key = f"work-clinical-{exam_id}"
-            state["workItemsById"][w4_key] = {
-                **record(w4_key, now),
-                "esrId": esr_id,
-                "entityId": exam_id,
-                "entityType": "examination",
-                "stage": "Clinical Evaluation",
-                "title": state["examinationRequirementsById"][rid].get("title", "Clinical Examination"),
-                "priority": esr.get("priority", "routine"),
-                "status": "queued",
-                "blockingReasons": [],
-                "assignedTo": esr.get("assignedTeamId"),
+            state.setdefault("examinersById", {})[exm.examiner_id] = {
+                "id": exm.examiner_id,
+                "displayName": exm.doctor_name,
+                "credentials": json.loads(exm.credentials) if isinstance(exm.credentials, str) and exm.credentials.startswith("[") else ["MD"],
+                "specialties": json.loads(exm.specialties) if isinstance(exm.specialties, str) and exm.specialties.startswith("[") else ["General Medical"],
             }
-            value["entityId"] = exam_id
+            state.setdefault("examinationsById", {})[exam_id] = exam_obj
+            from app.services.clinical_pipeline import ensure_clinical_records_for_exam
+            created_dbqs = ensure_clinical_records_for_exam(state, exam_obj, req_obj, now)
+            value["entityId"] = created_dbqs[0] if created_dbqs else exam_id
         event = "scheduling-appointment-confirmed"
 
     elif action == "cancelAppointment":

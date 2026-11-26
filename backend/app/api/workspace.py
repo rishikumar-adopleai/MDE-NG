@@ -3,7 +3,7 @@ import json
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field, JsonValue
 from sqlalchemy.orm import Session
 
@@ -11,7 +11,8 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import CurrentUser, get_current_user
 from app.models import IdempotencyRecord, OutboxJob
-from app.services.intake_store import INTAKE_COMMANDS, TRIAGE_TASK_NAME, apply_intake_command, enqueue_triage_job
+from app.services.clinical_pipeline import run_clinical_pipeline, with_clinical_view
+from app.services.intake_store import INTAKE_COMMANDS, TRIAGE_TASK_NAME, apply_intake_command, enqueue_triage_job, timestamp
 from app.services.intake_view import with_intake_views
 from app.services.scheduling import (
     SCHEDULING_COMMANDS,
@@ -76,6 +77,10 @@ def workspace_reader(user: CurrentUser = Depends(get_current_user)) -> CurrentUs
     return user
 
 
+def _with_all_views(state: dict) -> dict:
+    return with_clinical_view(with_scheduling_view(with_triage_view(with_intake_views(state))))
+
+
 @router.get("/runtime")
 def runtime() -> dict:
     return {"mode": settings.app_env, "authRequired": settings.auth_required,
@@ -87,7 +92,7 @@ def runtime() -> dict:
 def get_workspace(db: Session = Depends(get_db),
                   _user: CurrentUser = Depends(workspace_reader)) -> dict:
     state = get_state(db, backfill_requests=False, load_practice=False)
-    return with_scheduling_view(with_triage_view(with_intake_views(state))) if settings.app_env == "dev" else state
+    return _with_all_views(state) if settings.app_env == "dev" else state
 
 
 @router.get("/workspace/work-items/{work_id}")
@@ -99,6 +104,45 @@ def get_work_item(work_id: str, db: Session = Depends(get_db),
     outcome = run_engine({"action": "$stage-view", "args": [work_id], "state": state})
     if "error" in outcome:
         raise HTTPException(404, outcome["error"])
+    detail = outcome.get("detail") if isinstance(outcome, dict) else None
+    if isinstance(detail, dict) and "dbq" in detail and "examId" in detail:
+        dbq = detail["dbq"]
+        esr_id = dbq.get("esrId")
+        exam = (state.get("examinationsById") or {}).get(detail["examId"]) or {}
+        dossier = (state.get("triageDossiersByEsrId") or {}).get(esr_id) or {}
+        packets = dossier.get("packetsByContentionId") or {}
+        stage2_gaps = [
+            gap
+            for cid in dbq.get("contentionIds", [])
+            for gap in ((packets.get(cid) or {}).get("rulesEval") or {}).get("evidenceGaps") or []
+        ]
+        appt = next(
+            (
+                (state.get("appointmentsById") or {}).get(aid)
+                for aid in exam.get("appointmentIds", [])
+                if ((state.get("appointmentsById") or {}).get(aid) or {}).get("status") in {"confirmed-locally", "completed"}
+            ),
+            None,
+        )
+        fac = (state.get("facilitiesById") or {}).get(appt.get("facilityId")) if appt else None
+        detail["stage2Summary"] = dossier.get("overallMedicalSummary", "")
+        detail["stage2Gaps"] = stage2_gaps
+        detail["appointment"] = (
+            {
+                "id": appt["id"],
+                "startsAt": appt.get("startsAt"),
+                "endsAt": appt.get("endsAt"),
+                "modality": appt.get("modality"),
+                "status": appt.get("status"),
+                "facilityName": (fac or {}).get("name") or appt.get("facilityName") or "",
+                "examinerName": detail.get("examiner") or appt.get("examinerName") or "",
+            }
+            if appt
+            else None
+        )
+        detail["uploadedDbqDocument"] = dbq.get("uploadedDbqDocument")
+        detail["validationAlerts"] = dbq.get("validationAlerts", [])
+        detail["draftMedicalReview"] = dbq.get("draftMedicalReview")
     return outcome
 
 
@@ -183,7 +227,7 @@ def apply_command(
         "fingerprint": fingerprint, "value": outcome["value"],
     }))
     db.commit()
-    return {**outcome, "state": with_scheduling_view(with_triage_view(with_intake_views(next_state)))}
+    return {**outcome, "state": _with_all_views(next_state)}
 
 
 @router.post("/scheduling/match")
@@ -251,9 +295,168 @@ def prepare_triage_dossier(
         try:
             save_next_state(db, revision, state)
             db.commit()
-            return {"ok": True, "esrId": esr_id, "state": with_scheduling_view(with_triage_view(with_intake_views(state)))}
+            return {"ok": True, "esrId": esr_id, "state": _with_all_views(state)}
         except HTTPException as exc:
             if exc.status_code != 409:
                 raise
             db.rollback()
     raise HTTPException(409, "The workspace changed while preparing triage. Please retry.")
+
+
+class ClinicalValidateRequest(BaseModel):
+    values: dict[str, JsonValue] | None = None
+
+
+@router.post("/clinical/{dbq_id}/upload-dbq")
+async def upload_clinical_dbq(
+    dbq_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(workspace_reader),
+) -> dict:
+    if settings.app_env != "dev":
+        raise HTTPException(503, "This workflow action is unavailable.")
+    if user.role not in {"clinician", "admin"}:
+        raise HTTPException(403, "Only clinicians can upload completed DBQ reports.")
+    content = await file.read()
+    if not content:
+        raise HTTPException(422, "Upload a non-empty DBQ PDF or UTF-8 text file.")
+
+    for _ in range(3):
+        state = get_state(db)
+        dbq = (state.get("dbqsById") or {}).get(dbq_id)
+        if not dbq:
+            raise HTTPException(404, "DBQ record not found.")
+        revision = state["revision"]
+        graph_out = run_clinical_pipeline(
+            state,
+            dbq_id,
+            mode="uploaded-dbq",
+            uploaded_dbq_file={"filename": file.filename or "uploaded-dbq.pdf", "content": content},
+        )
+        extracted = graph_out.get("extracted_values") or {}
+        if any(str(v or "").strip() for v in extracted.values()):
+            outcome = run_engine({"action": "saveDBQDraft", "args": [dbq_id, extracted], "state": state, "actorId": user.user_id})
+            if "error" in outcome:
+                raise HTTPException(422, outcome["error"])
+            state = outcome["state"]
+        dbq_next = state["dbqsById"][dbq_id]
+        dbq_next["uploadedDbqDocument"] = {
+            "filename": file.filename or "uploaded-dbq.pdf",
+            "uploadedAt": timestamp(),
+            "uploadedBy": user.user_id,
+            "pageCount": len(graph_out.get("parsed_dbq_pages") or {}),
+            "detectedClaimantName": graph_out.get("detected_claimant_name", ""),
+        }
+        dbq_next["validationAlerts"] = graph_out.get("validation_alerts") or []
+        dbq_next["draftMedicalReview"] = graph_out.get("draft_medical_review")
+        try:
+            save_next_state(db, revision, state)
+            db.commit()
+            return {
+                "ok": True,
+                "dbqId": dbq_id,
+                "extractedValues": extracted,
+                "validationAlerts": dbq_next["validationAlerts"],
+                "draftMedicalReview": dbq_next["draftMedicalReview"],
+                "state": _with_all_views(state),
+            }
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            db.rollback()
+    raise HTTPException(409, "The workspace changed while uploading the DBQ. Please retry.")
+
+
+@router.post("/clinical/{order_id}/upload-diagnostic")
+async def upload_clinical_diagnostic(
+    order_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(workspace_reader),
+) -> dict:
+    if settings.app_env != "dev":
+        raise HTTPException(503, "This workflow action is unavailable.")
+    if user.role not in {"clinician", "admin"}:
+        raise HTTPException(403, "Only clinicians can upload diagnostic reports.")
+    content = await file.read()
+    if not content:
+        raise HTTPException(422, "Upload a non-empty diagnostic report.")
+
+    from app.services.clinical_pipeline import _parse_diagnostic_uploads
+    parsed_list = _parse_diagnostic_uploads([{"orderId": order_id, "filename": file.filename or "diagnostic.pdf", "content": content}])
+    parsed = parsed_list[0]
+    if not parsed.get("readable"):
+        raise HTTPException(422, parsed.get("error") or "The uploaded diagnostic file could not be read.")
+
+    for _ in range(3):
+        state = get_state(db)
+        order = (state.get("diagnosticOrdersById") or {}).get(order_id)
+        if not order:
+            raise HTTPException(404, "Diagnostic order not found.")
+        revision = state["revision"]
+        args = [order_id, parsed["summary"], f"{parsed['filename']} ({parsed['pageCount']}p)"]
+        if parsed.get("reportedFlag"):
+            args.append(parsed["reportedFlag"])
+        outcome = run_engine({"action": "recordDiagnosticResult", "args": args, "state": state, "actorId": user.user_id})
+        if "error" in outcome:
+            raise HTTPException(422, outcome["error"])
+        state = outcome["state"]
+        exam = (state.get("examinationsById") or {}).get(order["examinationId"]) or {}
+        for linked_dbq_id in exam.get("requiredDbqIds", []):
+            graph_out = run_clinical_pipeline(state, linked_dbq_id, mode="digital-form")
+            if linked_dbq_id in state.get("dbqsById", {}):
+                state["dbqsById"][linked_dbq_id]["validationAlerts"] = graph_out.get("validation_alerts") or []
+                state["dbqsById"][linked_dbq_id]["draftMedicalReview"] = graph_out.get("draft_medical_review")
+        try:
+            save_next_state(db, revision, state)
+            db.commit()
+            return {"ok": True, "orderId": order_id, "parsed": parsed, "state": _with_all_views(state)}
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            db.rollback()
+    raise HTTPException(409, "The workspace changed while uploading the diagnostic report. Please retry.")
+
+
+@router.post("/clinical/{dbq_id}/validate-and-draft")
+def validate_and_draft_clinical(
+    dbq_id: str,
+    body: ClinicalValidateRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(workspace_reader),
+) -> dict:
+    if settings.app_env != "dev":
+        raise HTTPException(503, "This workflow action is unavailable.")
+    if user.role not in {"clinician", "admin"}:
+        raise HTTPException(403, "Only clinicians can validate and draft medical reviews.")
+
+    for _ in range(3):
+        state = get_state(db)
+        dbq = (state.get("dbqsById") or {}).get(dbq_id)
+        if not dbq:
+            raise HTTPException(404, "DBQ record not found.")
+        revision = state["revision"]
+        if body.values is not None:
+            outcome = run_engine({"action": "saveDBQDraft", "args": [dbq_id, body.values], "state": state, "actorId": user.user_id})
+            if "error" in outcome:
+                raise HTTPException(422, outcome["error"])
+            state = outcome["state"]
+        graph_out = run_clinical_pipeline(state, dbq_id, mode="digital-form", submitted_values=body.values)
+        state["dbqsById"][dbq_id]["validationAlerts"] = graph_out.get("validation_alerts") or []
+        state["dbqsById"][dbq_id]["draftMedicalReview"] = graph_out.get("draft_medical_review")
+        try:
+            save_next_state(db, revision, state)
+            db.commit()
+            return {
+                "ok": True,
+                "dbqId": dbq_id,
+                "validationAlerts": state["dbqsById"][dbq_id]["validationAlerts"],
+                "draftMedicalReview": state["dbqsById"][dbq_id]["draftMedicalReview"],
+                "state": _with_all_views(state),
+            }
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            db.rollback()
+    raise HTTPException(409, "The workspace changed while validating. Please retry.")

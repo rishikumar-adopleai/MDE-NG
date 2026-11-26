@@ -232,6 +232,7 @@ function ContentionPlanningCard({
   isBvaRemand,
   onOpenCitation,
   onApproved,
+  onScheduling,
 }: {
   entry: TriageCaseContention;
   item: Contention;
@@ -240,6 +241,7 @@ function ContentionPlanningCard({
   isBvaRemand: boolean;
   onOpenCitation: (target: SourceTarget) => void;
   onApproved: (esrId: string, title: string, entityId?: string) => void;
+  onScheduling?: (esrId: string, entityId?: string) => void;
 }) {
   const { saveTriageDraft, approveTriagePlan, requestTriageClarification, resumeTriageReview, authorizeTriageAce } = useWorkspace();
   const row: TriageRowView | undefined | null = entry.row;
@@ -620,7 +622,13 @@ function ContentionPlanningCard({
           <button
             type="button"
             className="intake-secondary"
-            onClick={() => onApproved(item.esrId, item.title, approvedReq.id)}
+            onClick={() => {
+              if (onScheduling) {
+                onScheduling(item.esrId, approvedReq.id);
+              } else {
+                onApproved(item.esrId, item.title, approvedReq.id);
+              }
+            }}
           >
             Open in Scheduling <ArrowRight size={15} />
           </button>
@@ -884,7 +892,8 @@ export function TriagePage({
   };
 
   const visibleCases = groups[activeFilter];
-  const activeCase = visibleCases.find(c => c.esrId === selectedId) ?? visibleCases[0];
+  const [deselected, setDeselected] = useState(false);
+  const activeCase = deselected ? undefined : (visibleCases.find(c => c.esrId === selectedId) ?? visibleCases[0]);
   const queueList = useQueueRows(activeCase?.esrId, queueOpen, `${activeFilter}:${query}`);
   const activeEsr = activeCase ? esrsById[activeCase.esrId] : undefined;
   const activeDocs = activeEsr
@@ -975,8 +984,21 @@ export function TriagePage({
                   placeholder="Search claimant, ESR, or condition"
                   aria-label="Search Medical Triage queue"
                   value={query}
-                  onChange={e => onQueryChange(e.target.value)}
+                  onChange={e => {
+                    setDeselected(false);
+                    onQueryChange(e.target.value);
+                  }}
                 />
+                {query && (
+                  <button
+                    type="button"
+                    className="intake-icon-button"
+                    aria-label="Clear Medical Triage search"
+                    onClick={() => onQueryChange('')}
+                  >
+                    <X size={16} />
+                  </button>
+                )}
               </label>
               <div className="intake-queue-filters" role="group" aria-label="Triage queue filters">
                 {filters.map(f => (
@@ -984,7 +1006,10 @@ export function TriagePage({
                     type="button"
                     key={f.key}
                     aria-pressed={activeFilter === f.key}
-                    onClick={() => onFilterChange(f.key)}
+                    onClick={() => {
+                      setDeselected(false);
+                      onFilterChange(f.key);
+                    }}
                   >
                     {f.key === 'all' ? 'All cases' : f.label} <span>{groups[f.key].length}</span>
                   </button>
@@ -1001,10 +1026,16 @@ export function TriagePage({
                       className="intake-queue-row"
                       aria-pressed={activeCase?.esrId === c.esrId}
                       onClick={() => {
-                        onSelect(c.esrId);
-                        if (queueOpen) {
-                          setQueueOpen(false);
-                          requestAnimationFrame(() => caseHeading.current?.focus());
+                        if (activeCase?.esrId === c.esrId) {
+                          setDeselected(true);
+                          onSelect('');
+                        } else {
+                          setDeselected(false);
+                          onSelect(c.esrId);
+                          if (queueOpen) {
+                            setQueueOpen(false);
+                            requestAnimationFrame(() => caseHeading.current?.focus());
+                          }
                         }
                       }}
                     >
@@ -1129,6 +1160,18 @@ export function TriagePage({
                 >
                   <RefreshCw size={14} /> Refresh analysis
                 </button>
+                <button
+                  type="button"
+                  className="intake-icon-button"
+                  aria-label="Close case details"
+                  title="Close case"
+                  onClick={() => {
+                    setDeselected(true);
+                    onSelect('');
+                  }}
+                >
+                  <X size={18} />
+                </button>
               </div>
             </header>
 
@@ -1237,6 +1280,7 @@ export function TriagePage({
                       isBvaRemand={Boolean(activeCase.programFlags?.isBvaRemand)}
                       onOpenCitation={setSourceDrawer}
                       onApproved={(esrId, title, entityId) => setApprovedBanner({ esrId, title, entityId })}
+                      onScheduling={onScheduling}
                     />
                   );
                 })}
@@ -1269,8 +1313,8 @@ export function TriagePage({
     ) : (
           <section className="intake-case-empty">
             <Inbox size={24} />
-            <h2><HeadingText>No cases to triage</HeadingText></h2>
-            <p>Validated Intake cases appear here once Stage 1 completes and sends them to Medical Triage.</p>
+            <h2><HeadingText>{visibleCases.length ? 'No case selected' : 'No cases to triage'}</HeadingText></h2>
+            <p>{visibleCases.length ? 'Select a patient case from the triage queue to review clinical evidence and approve examination plans.' : 'Validated Intake cases appear here once Stage 1 completes and sends them to Medical Triage.'}</p>
           </section>
         )}
       </div>

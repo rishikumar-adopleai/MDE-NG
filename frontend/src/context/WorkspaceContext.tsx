@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AppointmentLogistics, Communication, DiagnosticReportedFlag, DocumentReviewDecision, EntityId, FieldValues, Modality, SimulatedDeliveryResponse, StageKey, TriagePlan } from '../domain/model';
-import { generateStageReview, intakeRequest, loadRuntime, loadWorkItem, loadWorkspace, receiveIntakeSample, receiveIntakeXml, requestIntakeDocumentReview, sendWorkspaceCommand, triggerTriagePrepare, WorkspaceApiError, type AIStageReview, type WorkspacePayload, type WorkspaceRuntime } from '../data/repositories/workspaceApi';
+import { generateStageReview, intakeRequest, loadRuntime, loadWorkItem, loadWorkspace, receiveIntakeSample, receiveIntakeXml, requestIntakeDocumentReview, sendWorkspaceCommand, triggerTriagePrepare, uploadClinicalDBQ, uploadClinicalDiagnostic, validateAndDraftClinical, WorkspaceApiError, type AIStageReview, type WorkspacePayload, type WorkspaceRuntime } from '../data/repositories/workspaceApi';
 
 export type CommandResult = { ok: true; message: string; value?: unknown } | { ok: false; message: string };
 
@@ -44,6 +44,9 @@ type WorkspaceContextValue = {
   recordDiagnosticException: (id: EntityId, reason: 'claimant-declined' | 'medically-inadvisable', note: string) => Promise<CommandResult>;
   completeClinicalReview: (id: EntityId, attestation: { versionId: string; confirmed: boolean; draftRevision: number }) => Promise<CommandResult>;
   returnClinicalToScheduling: (examOrDbqId: EntityId, reason: string) => Promise<CommandResult>;
+  uploadDBQDocument: (dbqId: EntityId, file: File) => Promise<CommandResult>;
+  uploadDiagnosticDocument: (orderId: EntityId, file: File) => Promise<CommandResult>;
+  validateAndDraftDBQ: (dbqId: EntityId, values?: FieldValues) => Promise<CommandResult>;
   requestCorrection: (id: EntityId, comment: string) => Promise<CommandResult>;
   addQAFinding: (reviewId: EntityId, input: { title: string; sectionReference: string; issueCategory: import('../domain/model').QAFinding['issueCategory']; severity: import('../domain/model').QAFinding['severity']; comment: string }) => Promise<CommandResult>;
   resubmitCorrection: (id: EntityId, values: FieldValues) => Promise<CommandResult>;
@@ -73,7 +76,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const queueRef = useRef<Promise<void>>(Promise.resolve());
 
   const acceptState = useCallback((incoming: WorkspacePayload, version: number) => {
-    if (version !== sessionVersion.current || incoming.revision <= (stateRef.current?.revision ?? -1)) return;
+    if (version !== sessionVersion.current || incoming.revision < (stateRef.current?.revision ?? -1)) return;
     stateRef.current = incoming;
     setState(incoming);
   }, []);
@@ -191,6 +194,39 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, [acceptState]);
 
+  const uploadDBQDocument = useCallback(async (dbqId: EntityId, file: File): Promise<CommandResult> => {
+    try {
+      const version = sessionVersion.current;
+      const result = await uploadClinicalDBQ(dbqId, file);
+      acceptState(result.state, version);
+      return { ok: true, message: 'Completed DBQ uploaded, extracted, and validated.', value: result };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Unable to process uploaded DBQ.' };
+    }
+  }, [acceptState]);
+
+  const uploadDiagnosticDocument = useCallback(async (orderId: EntityId, file: File): Promise<CommandResult> => {
+    try {
+      const version = sessionVersion.current;
+      const result = await uploadClinicalDiagnostic(orderId, file);
+      acceptState(result.state, version);
+      return { ok: true, message: 'Diagnostic report uploaded and linked for clinician review.', value: result };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Unable to upload diagnostic report.' };
+    }
+  }, [acceptState]);
+
+  const validateAndDraftDBQ = useCallback(async (dbqId: EntityId, values?: FieldValues): Promise<CommandResult> => {
+    try {
+      const version = sessionVersion.current;
+      const result = await validateAndDraftClinical(dbqId, values);
+      acceptState(result.state, version);
+      return { ok: true, message: 'Clinical validation complete and draft medical review prepared.', value: result };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Unable to run clinical validation.' };
+    }
+  }, [acceptState]);
+
   const value = useMemo<WorkspaceContextValue>(() => {
     return {
       state, loading, storageError, runtime, importIntakeDocument, retryIntakeDocument, receiveIntakeExample,
@@ -226,6 +262,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       recordDiagnosticException: (id, reason, note) => run('recordDiagnosticException', [id, reason, note], 'Diagnostic exception recorded.'),
       completeClinicalReview: (id, attestation) => run('completeClinicalReview', [id, attestation], 'Clinician review recorded and routed to QA.'),
       returnClinicalToScheduling: (examOrDbqId, reason) => run('returnClinicalToScheduling', [examOrDbqId, reason], 'Examination returned to Stage 3 (Scheduling) for rework.'),
+      uploadDBQDocument,
+      uploadDiagnosticDocument,
+      validateAndDraftDBQ,
       requestCorrection: (id, comment) => run('requestCorrection', [id, comment], 'Correction task created for the linked DBQ.'),
       addQAFinding: (id, input) => run('addQAFinding', [id, input], 'QA finding added to this report review.'),
       resubmitCorrection: (id, values) => run('resubmitCorrection', [id, values], 'Correction draft saved. Record clinician sign-off to send it to QA.'),
@@ -243,7 +282,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       recordSimulatedContentionCancellation: (esrId, contentionId, reason) => run('recordSimulatedContentionCancellation', [esrId, contentionId, reason], 'Contention cancellation recorded.'),
       closeESR: (id, note) => run('closeESR', [id, note], 'ESR closure recorded.'),
     };
-  }, [state, loading, storageError, runtime, importIntakeDocument, retryIntakeDocument, receiveIntakeExample, reviewIntakeDocuments, prepareTriageDossier, getWorkItem, run]);
+  }, [state, loading, storageError, runtime, importIntakeDocument, retryIntakeDocument, receiveIntakeExample, reviewIntakeDocuments, prepareTriageDossier, uploadDBQDocument, uploadDiagnosticDocument, validateAndDraftDBQ, getWorkItem, run]);
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

@@ -35,7 +35,15 @@ class Stage3ScenarioTests(unittest.TestCase):
         self.db = SessionLocal()
         ensure_stage3_directory_seeded(self.db)
         self.state = get_state(self.db)
-        self.esr_id = "esr-local-99d9ccd6661a"
+        self.esr_id = next(iter(self.state.get("esrsById", {}).keys()), "esr-local-test")
+        if self.esr_id not in self.state.get("esrsById", {}):
+            self.state["esrsById"][self.esr_id] = {
+                "id": self.esr_id, "veteranId": "vet-test-1", "contentionIds": ["c1", "c2", "c3"],
+                "status": "in-progress", "priority": "routine",
+            }
+            self.state["veteransById"]["vet-test-1"] = {
+                "id": "vet-test-1", "fullName": "Test Veteran", "city": "Columbus", "stateCode": "OH", "postalCode": "43215"
+            }
 
     def tearDown(self):
         self.db.close()
@@ -43,10 +51,28 @@ class Stage3ScenarioTests(unittest.TestCase):
     def _reset_esr_requirements(self):
         """Reset test ESR requirements to unheld 'approved' status."""
         esr = self.state["esrsById"][self.esr_id]
-        veteran = self.state["veteransById"][esr["veteranId"]]
+        veteran = self.state["veteransById"].setdefault(esr["veteranId"], {
+            "id": esr["veteranId"], "fullName": "Morgan Q Demo", "city": "Columbus", "stateCode": "OH", "postalCode": "43215"
+        })
         veteran["postalCode"] = "43215"
         veteran["stateCode"] = "OH"
         veteran["city"] = "Columbus"
+
+        specs = [
+            ("req-test-1", "Knee and Lower Leg", "Orthopedics / Musculoskeletal", "in-person", ["Knee and Lower Leg Conditions DBQ"]),
+            ("req-test-2", "Hearing Loss and Tinnitus", "Audiology", "in-person", ["Hearing Loss and Tinnitus DBQ"]),
+            ("req-test-3", "General Medical", "General Medicine", "in-person", ["General Medical DBQ"]),
+        ]
+        self.state["examinationRequirementsById"] = {
+            rid: r for rid, r in self.state.get("examinationRequirementsById", {}).items()
+            if r.get("esrId") != self.esr_id
+        }
+        for req_id, title, spec, mod, dbqs in specs:
+            self.state["examinationRequirementsById"][req_id] = {
+                "id": req_id, "esrId": self.esr_id, "title": title, "status": "approved",
+                "examinationType": title, "requiredSpecialties": [spec], "requiredCredentials": ["MD / DO", "AuD"],
+                "selectedModality": mod, "requestedDbqTypes": dbqs, "requestedDiagnostics": [],
+            }
 
         for r in self.state.get("examinationRequirementsById", {}).values():
             if r.get("esrId") == self.esr_id:

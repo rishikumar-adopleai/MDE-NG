@@ -1,6 +1,6 @@
 import { HeadingText } from '../HeadingText';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowRight, ChevronDown, Inbox, Search } from 'lucide-react';
+import { ArrowRight, ChevronDown, Inbox, Search, X } from 'lucide-react';
 import { useWorkspace, type CommandResult } from '../context/WorkspaceContext';
 import { getWorkItemsByStage } from '../domain/selectors';
 import type { StageKey, WorkItem } from '../domain/model';
@@ -102,6 +102,7 @@ export function StageWorkbench<T>({ stage, description, title, query, onQueryCha
   const { state } = useWorkspace();
   const [focusId, setFocusId] = useState('');
   const [open, setOpen] = useState(false);
+  const [deselected, setDeselected] = useState(false);
   const matches = state ? getWorkItemsByStage(state, stage).filter(item => visibleIds.has(item.esrId)) : [];
   const blocked = (item: WorkItem) => item.status === 'blocked' || item.blockingReasons.length > 0;
   const groups = {
@@ -111,7 +112,7 @@ export function StageWorkbench<T>({ stage, description, title, query, onQueryCha
     ready: matches.filter(item => item.status === 'queued' && !blocked(item)),
   };
   const rows = groups[activeFilter];
-  const active = rows.find(item => item.id === focusId && item.esrId === selectedId) ?? rows.find(item => item.esrId === selectedId && item.entityId === selectedEntityId) ?? rows.find(item => item.esrId === selectedId) ?? rows[0];
+  const active = deselected ? undefined : (rows.find(item => item.id === focusId && item.esrId === selectedId) ?? rows.find(item => item.esrId === selectedId && item.entityId === selectedEntityId) ?? rows.find(item => item.esrId === selectedId) ?? rows[0]);
   const claimant = (item: WorkItem) => state?.veteransById[state.esrsById[item.esrId]?.veteranId]?.displayName ?? item.esrId;
   const appointmentLabel = (item: WorkItem) => {
     const appointment = state?.appointmentsById[item.entityId];
@@ -137,8 +138,15 @@ export function StageWorkbench<T>({ stage, description, title, query, onQueryCha
           </div>
           {rows.length ? <ul ref={queueList} className="intake-queue-list">{rows.map(item => <li key={item.id}>
             <button type="button" className="intake-queue-row" aria-pressed={item.id === active?.id} onClick={() => {
-              setFocusId(item.id); onSelect(item.esrId);
-              if (open) { setOpen(false); requestAnimationFrame(() => heading.current?.focus()); }
+              if (active?.id === item.id) {
+                setDeselected(true);
+                onSelect('');
+              } else {
+                setDeselected(false);
+                setFocusId(item.id);
+                onSelect(item.esrId);
+                if (open) { setOpen(false); requestAnimationFrame(() => heading.current?.focus()); }
+              }
             }}>
               <span className="intake-queue-row-main"><strong>{appointmentLabel(item)}</strong><small>{claimant(item)}</small><small className="workflow-queue-reference">{practiceCaseLabel(state?.esrsById[item.esrId]) ?? item.esrId}</small></span>
               <Status text={formatStatus(workStatus(item))} tone={caseStateTone(workStatus(item))} />
@@ -149,7 +157,7 @@ export function StageWorkbench<T>({ stage, description, title, query, onQueryCha
       {active ? <section className="intake-case-card queue-detail" key={active.id} aria-labelledby="stage-work-title" tabIndex={0}>
         <header className="intake-case-header"><span className="intake-case-avatar"><Inbox size={20} aria-hidden="true" /></span><div className="intake-case-identity">
           <span>{practiceCaseLabel(state?.esrsById[active.esrId]) ?? active.esrId} · {claimant(active)}</span><h2 ref={heading} tabIndex={-1} id="stage-work-title">{active.title}</h2>
-        </div><span className="intake-case-status"><Status text={formatStatus(active.status)} tone={caseStateTone(active.status)} /></span></header>
+        </div><div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><span className="intake-case-status"><Status text={formatStatus(active.status)} tone={caseStateTone(active.status)} /></span><button type="button" className="intake-icon-button" aria-label="Close work item details" title="Close case" onClick={() => { setDeselected(true); onSelect(''); }}><X size={18} /></button></div></header>
         <StageAIReview stage={stage} entityId={active.entityId} />
         <WorkDetail<T> item={active} render={render} />
       </section> : <section className="intake-case-empty"><Inbox size={25} /><h2><HeadingText>No work item selected</HeadingText></h2><p>Eligible records appear here as they enter this stage.</p></section>}

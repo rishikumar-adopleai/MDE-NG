@@ -245,6 +245,50 @@ export interface Facility extends VersionedEntity {
   status: PersistedRecordStatus;
 }
 
+export interface UploadedDbqDocument {
+  filename: string;
+  uploadedAt: string;
+  uploadedBy: string;
+  pageCount: number;
+  detectedClaimantName?: string;
+}
+
+export interface ClinicalValidationAlert {
+  id: string;
+  severity: 'blocking' | 'warning';
+  category: string;
+  message: string;
+  recommendedAction: string;
+}
+
+export interface DraftMedicalReview {
+  summary: string;
+  keyFindings: string[];
+  diagnosticSummary: string;
+  citations: string[];
+  generatedAt: string;
+  modelUsed: string;
+  promptVersion: string;
+  status: 'pending-approval' | 'approved';
+}
+
+export interface ClinicalCaseView {
+  esrId: EntityId;
+  claimantName: string;
+  claimIdentifier: string;
+  priority: ESR['priority'];
+  overallMedicalSummary?: string;
+  dbqWorkIds: EntityId[];
+  dbqIds: EntityId[];
+  signedCount: number;
+  totalCount: number;
+}
+
+export interface ClinicalWorkspaceView {
+  queueIds: EntityId[];
+  casesByEsrId: Record<EntityId, ClinicalCaseView>;
+}
+
 export interface DBQ extends VersionedEntity {
   examinationId: EntityId;
   esrId: EntityId;
@@ -262,6 +306,9 @@ export interface DBQ extends VersionedEntity {
   reviewedAt?: string;
   signedVersionId?: EntityId;
   localAttestation?: { versionId: EntityId; staffActorId: EntityId; examinerId: EntityId; examinerName: string; credentials: string[]; specialty: string[]; at: string };
+  uploadedDbqDocument?: UploadedDbqDocument;
+  validationAlerts?: ClinicalValidationAlert[];
+  draftMedicalReview?: DraftMedicalReview;
 }
 
 export interface DBQVersion extends VersionedEntity {

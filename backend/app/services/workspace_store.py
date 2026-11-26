@@ -49,8 +49,12 @@ def run_engine(payload: dict | None = None, *, bootstrap: bool = False) -> dict:
     try:
         result = subprocess.run(
             command, input=json.dumps(payload), capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             timeout=30, check=True, env=clean_env,
         )
+        if not result.stdout:
+            logger.error("Workspace engine returned empty stdout. Stderr: %s", result.stderr)
+            raise HTTPException(503, "The local workflow engine returned an empty response.")
         return json.loads(result.stdout)
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr or ""
@@ -101,7 +105,9 @@ def source_workspace(state: dict) -> dict:
 def get_state(db: Session, *, backfill_requests: bool = False, load_practice: bool = False) -> dict:
     snapshot = get_snapshot(db)
     if snapshot:
-        return snapshot.state or empty_workspace()
+        state = snapshot.state or empty_workspace()
+        state["revision"] = snapshot.revision
+        return state
     if settings.app_env == "prod":
         return empty_workspace()
 
@@ -115,11 +121,14 @@ def get_state(db: Session, *, backfill_requests: bool = False, load_practice: bo
         winner = get_snapshot(db)
         if winner is None:
             raise
-        return winner.state
+        winner_state = winner.state or empty_workspace()
+        winner_state["revision"] = winner.revision
+        return winner_state
     return fixture
 
 
 def save_next_state(db: Session, revision: int, next_state: dict) -> None:
+    next_state["revision"] = revision + 1
     saved = db.execute(
         update(WorkspaceSnapshot)
         .where(WorkspaceSnapshot.id == WORKSPACE_ID, WorkspaceSnapshot.revision == revision)

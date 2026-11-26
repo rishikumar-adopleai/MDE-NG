@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   Stethoscope,
   Users,
+  X,
 } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';
 import { matchCoordinatedScheduling, matchSchedulingOptions } from '../data/repositories/workspaceApi';
@@ -28,6 +29,7 @@ import type {
 import { StageHeading } from './StageHeading';
 import { dateLabel, modalityLabels, resultEntityId, type StageProps } from './StageWorkbench';
 import { Status } from './shared';
+import { HeadingText } from '../HeadingText';
 
 function ProgressiveScheduleFinder({
   requirementIds,
@@ -1034,16 +1036,19 @@ export function SchedulingPage({
     return true;
   });
 
-  const activeCase = visibleCases.find(c => c.esrId === selectedId) ?? visibleCases[0];
+  const [deselected, setDeselected] = useState(false);
+  const activeCase = deselected
+    ? undefined
+    : (visibleCases.find(c => c.esrId === selectedId) ?? visibleCases[0]);
 
   useEffect(() => {
-    if (visibleCases.length > 0) {
+    if (!deselected && visibleCases.length > 0) {
       const isCurrentVisible = visibleCases.some(c => c.esrId === selectedId);
       if (!isCurrentVisible) {
         onSelect(visibleCases[0].esrId);
       }
     }
-  }, [schedFilter, priorityFilter, query, visibleCases, selectedId, onSelect]);
+  }, [deselected, schedFilter, priorityFilter, query, visibleCases, selectedId, onSelect]);
 
   return (
     <div className="intake-page">
@@ -1065,8 +1070,21 @@ export function SchedulingPage({
                 <input
                   placeholder="Search claimant, ESR, or exam"
                   value={query}
-                  onChange={e => onQueryChange(e.target.value)}
+                  onChange={e => {
+                    setDeselected(false);
+                    onQueryChange(e.target.value);
+                  }}
                 />
+                {query && (
+                  <button
+                    type="button"
+                    className="intake-icon-button"
+                    aria-label="Clear scheduling search"
+                    onClick={() => onQueryChange('')}
+                  >
+                    <X size={15} />
+                  </button>
+                )}
               </label>
               <div className="intake-queue-filters" role="group" aria-label="Scheduling operational filters">
                 {schedFilters.map(f => (
@@ -1074,7 +1092,10 @@ export function SchedulingPage({
                     type="button"
                     key={f.key}
                     aria-pressed={schedFilter === f.key}
-                    onClick={() => setSchedFilter(f.key as any)}
+                    onClick={() => {
+                      setDeselected(false);
+                      setSchedFilter(f.key as any);
+                    }}
                   >
                     {f.label} <span>{f.count}</span>
                   </button>
@@ -1086,7 +1107,10 @@ export function SchedulingPage({
                   <select
                     aria-label="Filter scheduling priority and focus"
                     value={priorityFilter}
-                    onChange={e => setPriorityFilter(e.target.value as any)}
+                    onChange={e => {
+                      setDeselected(false);
+                      setPriorityFilter(e.target.value as any);
+                    }}
                   >
                     <option value="all">All Priorities &amp; Focus</option>
                     <option value="expedited">Expedited / Urgent SLA</option>
@@ -1106,7 +1130,15 @@ export function SchedulingPage({
                       type="button"
                       className="intake-queue-row"
                       aria-pressed={activeCase?.esrId === c.esrId}
-                      onClick={() => onSelect(c.esrId)}
+                      onClick={() => {
+                        if (activeCase?.esrId === c.esrId) {
+                          setDeselected(true);
+                          onSelect('');
+                        } else {
+                          setDeselected(false);
+                          onSelect(c.esrId);
+                        }
+                      }}
                     >
                       <span className="intake-queue-row-main">
                         <strong>{c.claimantName}</strong>
@@ -1167,10 +1199,24 @@ export function SchedulingPage({
                   </p>
                 </div>
               </div>
-              <Status
-                text={activeCase.pendingCount === 0 ? 'All Scheduled' : `${activeCase.pendingCount} Pending`}
-                tone={activeCase.pendingCount === 0 ? 'green' : 'amber'}
-              />
+              <div className="triage-overview-actions">
+                <Status
+                  text={activeCase.pendingCount === 0 ? 'All Scheduled' : `${activeCase.pendingCount} Pending`}
+                  tone={activeCase.pendingCount === 0 ? 'green' : 'amber'}
+                />
+                <button
+                  type="button"
+                  className="intake-icon-button"
+                  aria-label="Close case details"
+                  title="Close case"
+                  onClick={() => {
+                    setDeselected(true);
+                    onSelect('');
+                  }}
+                >
+                  <X size={18} />
+                </button>
+              </div>
             </header>
 
             <div className="triage-kpi-strip sched-kpi-strip">
@@ -1294,10 +1340,14 @@ export function SchedulingPage({
             )}
           </section>
         ) : (
-          <section className="intake-empty-state">
-            <Inbox size={26} />
-            <h3>No examinations waiting in Scheduling</h3>
-            <p>Approve an examination plan in Stage 2 (Medical Triage) to release it here.</p>
+          <section className="intake-case-empty">
+            <Inbox size={24} />
+            <h2><HeadingText>{visibleCases.length ? 'No case selected' : 'No examinations waiting in Scheduling'}</HeadingText></h2>
+            <p>
+              {visibleCases.length
+                ? 'Select a patient case from the scheduling queue to coordinate facilities, examiners, and appointment slots.'
+                : 'Approve an examination plan in Stage 2 (Medical Triage) to release it here.'}
+            </p>
           </section>
         )}
       </div>

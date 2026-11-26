@@ -99,7 +99,7 @@ export function recordExamEncounter(state: WorkspaceState, dbqId: string, note: 
   const now = nowIso();
   const next = copyMaps(state, ['appointmentsById','examinationsById','activitiesById']);
   next.appointmentsById[appointment.id] = update(appointment, { status: 'completed',
-    history: [...appointment.history, { status: 'completed', at: now, actorId: 'user-clinician', note: note.trim() }],
+    history: [...(appointment.history || []), { status: 'completed', at: now, actorId: 'user-clinician', note: note.trim() }],
   }, now);
   next.examinationsById[exam.id] = update(exam, { status: 'in-progress' }, now);
   addActivity(next, { esrId: dbq.esrId, entityId: appointment.id, entityType: 'appointment', action: 'exam-encounter-recorded', rationale: note.trim() }, now);
@@ -437,7 +437,7 @@ export function confirmAppointment(state: WorkspaceState, appointmentId: EntityI
     const id = `${reference}-${recipient}`;
     next.communicationsById[id] = { id, version: 1, createdAt: now, updatedAt: now, esrId: appointment.esrId, appointmentId, channel: 'mail', direction: 'outbound', recipient, summary, outcome: 'pending', actorId: 'user-scheduler' };
   }
-  next.appointmentsById[appointmentId] = update(appointment, { status: 'confirmed-locally', schedulingMethod: method, localNotification: notice, confirmationNote: confirmationNote.trim(), history: [...appointment.history, { status: 'confirmed-locally', at: now, actorId: 'user-scheduler', note: confirmationNote.trim() }] }, now);
+  next.appointmentsById[appointmentId] = update(appointment, { status: 'confirmed-locally', schedulingMethod: method, localNotification: notice, confirmationNote: confirmationNote.trim(), history: [...(appointment.history || []), { status: 'confirmed-locally', at: now, actorId: 'user-scheduler', note: confirmationNote.trim() }] }, now);
   changedStatus(next, { esrId: appointment.esrId, entityId: appointmentId, entityType: 'appointment', action: 'appointment-confirmed-locally', rationale: confirmationNote }, appointment.status, 'confirmed-locally', now);
   return refreshWorkItems(next, now);
 }
@@ -474,7 +474,7 @@ export function rescheduleAppointment(state: WorkspaceState, appointmentId: Enti
   if (!['held', 'confirmed-locally', 'reschedule-requested'].includes(appointment.status)) throw new WorkflowRuleError('Only an active appointment can be rescheduled.');
   const esr = state.esrsById[appointment.esrId];
   if (esr?.schedulingProgram === 'IDES' && !coordinationReference.trim()) throw new WorkflowRuleError('Record the authorized military coordination reference for IDES.');
-  if (appointment.history.some(item => item.status === 'reschedule-requested')) throw new WorkflowRuleError('A local rescheduling opportunity is already recorded. Escalate for review.');
+  if ((appointment.history || []).some(item => item.status === 'reschedule-requested')) throw new WorkflowRuleError('A local rescheduling opportunity is already recorded. Escalate for review.');
   if (typeof slot?.facilityId !== 'string' || !slot.facilityId) throw new WorkflowRuleError('Select the exact available replacement slot and facility.');
   if (appointment.startsAt === slot.startsAt && appointment.facilityId === slot.facilityId && appointment.modality === slot.modality) throw new WorkflowRuleError('Select a different appointment slot.');
   const exam = state.examinationsById[appointment.examinationId];
@@ -485,7 +485,7 @@ export function rescheduleAppointment(state: WorkspaceState, appointmentId: Enti
   const now = nowIso();
   const next = copyMaps(state, ['appointmentsById', 'activitiesById']);
   const localLogistics: AppointmentLogistics = { ...travel, specialTransportRequired: false, specialTransportStatus: 'pending', consentStatus: 'pending', vaPreapprovalStatus: 'pending', note: '' };
-  next.appointmentsById[appointmentId] = update(appointment, { startsAt: slot.startsAt, endsAt: slot.endsAt, facilityId: slot.facilityId, modality: slot.modality, status: 'held', confirmationNote: undefined, schedulingMethod: undefined, localNotification: undefined, outreachWindowOpenedAt: now, localLogistics, history: [...appointment.history, { status: 'reschedule-requested', at: now, actorId: 'user-scheduler', note: coordinationReference.trim() || 'Replacement slot selected.' }, { status: 'held', at: now, actorId: 'user-scheduler', note: 'Replacement appointment time held pending contact and logistics.' }] }, now);
+  next.appointmentsById[appointmentId] = update(appointment, { startsAt: slot.startsAt, endsAt: slot.endsAt, facilityId: slot.facilityId, modality: slot.modality, status: 'held', confirmationNote: undefined, schedulingMethod: undefined, localNotification: undefined, outreachWindowOpenedAt: now, localLogistics, history: [...(appointment.history || []), { status: 'reschedule-requested', at: now, actorId: 'user-scheduler', note: coordinationReference.trim() || 'Replacement slot selected.' }, { status: 'held', at: now, actorId: 'user-scheduler', note: 'Replacement appointment time held pending contact and logistics.' }] }, now);
   changedStatus(next, { esrId: appointment.esrId, entityId: appointmentId, entityType: 'appointment', action: 'appointment-rescheduled', rationale: 'Replacement slot saved locally; logistics and contact checks are pending.' }, appointment.status, 'held', now);
   return refreshWorkItems(next, now);
 }
@@ -497,7 +497,7 @@ export function cancelAppointment(state: WorkspaceState, appointmentId: EntityId
   if (!reason.trim()) throw new WorkflowRuleError('Add a cancellation reason.');
   const now = nowIso();
   const next = copyMaps(state, ['appointmentsById', 'examinationsById', 'activitiesById']);
-  next.appointmentsById[appointmentId] = update(appointment, { status: 'cancelled', history: [...appointment.history, { status: 'cancelled', at: now, actorId: 'user-scheduler', note: reason.trim() }] }, now);
+  next.appointmentsById[appointmentId] = update(appointment, { status: 'cancelled', history: [...(appointment.history || []), { status: 'cancelled', at: now, actorId: 'user-scheduler', note: reason.trim() }] }, now);
   const examination = next.examinationsById[appointment.examinationId];
   if (examination && !examination.appointmentIds.some((id) => id !== appointmentId && ['held', 'confirmed-locally', 'completed'].includes(state.appointmentsById[id]?.status ?? ''))) next.examinationsById[examination.id] = update(examination, { status: 'awaiting-scheduling', examinerId: undefined }, now);
   changedStatus(next, { esrId: appointment.esrId, entityId: appointmentId, entityType: 'appointment', action: 'appointment-cancelled', rationale: reason.trim() }, appointment.status, 'cancelled', now);
@@ -589,7 +589,13 @@ export function completeClinicalReview(state: WorkspaceState, dbqId: EntityId, a
     throw new WorkflowRuleError('Attest to the exact persisted report version before sending it to QA.');
   }
   if (dbq.formVersion === 'synthetic-v2' && !exam.appointmentIds.some(id => state.appointmentsById[id]?.status === 'completed')) throw new WorkflowRuleError('Record the completed encounter first.');
-  const examiner = exam.examinerId ? state.examinersById[exam.examinerId] : undefined;
+  const apptWithExaminer = exam.appointmentIds.map(id => state.appointmentsById[id]).find(a => a?.examinerId || a?.examinerName);
+  const examiner = (exam.examinerId && state.examinersById[exam.examinerId]) || (apptWithExaminer ? {
+    id: apptWithExaminer.examinerId || exam.examinerId || 'DEMO-EXM',
+    displayName: apptWithExaminer.examinerName || 'Assigned Examiner',
+    credentials: ['MD'],
+    specialties: ['General Medical'],
+  } : undefined);
   if (!examiner) throw new WorkflowRuleError('An assigned examiner is required for local sign-off.');
   const orders = exam.diagnosticOrderIds.map(id => state.diagnosticOrdersById[id]);
   if (orders.some(item => !item || !diagnosticReady(item))) throw new WorkflowRuleError('Review each required diagnostic result or document the applicable exception.');
@@ -1034,7 +1040,7 @@ export function recordSimulatedContentionCancellation(state: WorkspaceState, esr
     for (const id of exam.appointmentIds) {
       const appointment = state.appointmentsById[id];
       if (!appointment || !['held','confirmed-locally','reschedule-requested'].includes(appointment.status)) continue;
-      next.appointmentsById[id] = update(appointment, { status: 'cancelled', history: [...appointment.history,
+      next.appointmentsById[id] = update(appointment, { status: 'cancelled', history: [...(appointment.history || []),
         { status: 'cancelled', at: now, actorId: 'user-operations', note: 'All linked contentions were cancelled in the local simulation.' }],
       }, now);
     }

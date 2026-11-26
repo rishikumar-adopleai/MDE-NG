@@ -1,7 +1,7 @@
-import type { AIStageReview, DocumentReviewDecision, EsrInspectionResult, IntakeWorkspaceView, SchedulingWorkspaceView, StageKey, TriageWorkspaceView, WorkspaceState } from '../../domain/model';
+import type { AIStageReview, ClinicalWorkspaceView, DocumentReviewDecision, EsrInspectionResult, IntakeWorkspaceView, SchedulingWorkspaceView, StageKey, TriageWorkspaceView, WorkspaceState } from '../../domain/model';
 export type { AIStageReview, EsrInspectionResult } from '../../domain/model';
 
-export type WorkspacePayload = WorkspaceState & { intake?: IntakeWorkspaceView; triage?: TriageWorkspaceView; scheduling?: SchedulingWorkspaceView };
+export type WorkspacePayload = WorkspaceState & { intake?: IntakeWorkspaceView; triage?: TriageWorkspaceView; scheduling?: SchedulingWorkspaceView; clinical?: ClinicalWorkspaceView };
 
 export type WorkspaceRuntime = {
   mode: 'dev' | 'prod';
@@ -145,5 +145,44 @@ export function matchCoordinatedScheduling(
       esrId,
       requirementIds: requirementIds && requirementIds.length ? requirementIds : null,
     }),
+  });
+}
+
+export function uploadClinicalDBQ(dbqId: string, file: File) {
+  const formData = new FormData();
+  formData.append('file', file);
+  return request<{
+    ok: boolean;
+    dbqId: string;
+    extractedValues: import('../../domain/model').FieldValues;
+    validationAlerts: import('../../domain/model').ClinicalValidationAlert[];
+    draftMedicalReview?: import('../../domain/model').DraftMedicalReview;
+    state: WorkspacePayload;
+  }>(`/clinical/${encodeURIComponent(dbqId)}/upload-dbq`, {
+    method: 'POST',
+    body: formData,
+  });
+}
+
+export function uploadClinicalDiagnostic(orderId: string, file: File) {
+  const formData = new FormData();
+  formData.append('file', file);
+  return request<{ ok: boolean; orderId: string; state: WorkspacePayload }>(
+    `/clinical/${encodeURIComponent(orderId)}/upload-diagnostic`,
+    { method: 'POST', body: formData },
+  );
+}
+
+export function validateAndDraftClinical(dbqId: string, values?: import('../../domain/model').FieldValues) {
+  return request<{
+    ok: boolean;
+    dbqId: string;
+    validationAlerts: import('../../domain/model').ClinicalValidationAlert[];
+    draftMedicalReview?: import('../../domain/model').DraftMedicalReview;
+    state: WorkspacePayload;
+  }>(`/clinical/${encodeURIComponent(dbqId)}/validate-and-draft`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values: values ?? null }),
   });
 }
