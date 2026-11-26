@@ -3,6 +3,7 @@ import type { AppointmentLogistics, Communication, DiagnosticReportedFlag, Docum
 import { generateStageReview, intakeRequest, loadRuntime, loadWorkItem, loadWorkspace, receiveIntakeSample, receiveIntakeXml, requestIntakeDocumentReview, sendWorkspaceCommand, triggerTriagePrepare, uploadClinicalDBQ, uploadClinicalDiagnostic, validateAndDraftClinical, WorkspaceApiError, type AIStageReview, type WorkspacePayload, type WorkspaceRuntime } from '../data/repositories/workspaceApi';
 
 export type CommandResult = { ok: true; message: string; value?: unknown } | { ok: false; message: string };
+export type TriageActionKind = 'draft' | 'approve' | 'clarification' | 'resume' | 'authorizeAce';
 
 type WorkspaceContextValue = {
   state: WorkspacePayload | undefined;
@@ -17,6 +18,11 @@ type WorkspaceContextValue = {
   completeDocumentProcessing: (esrId: EntityId) => Promise<CommandResult>;
   updateDocumentCategory: (documentId: EntityId, category: string) => Promise<CommandResult>;
   validateIntake: (esrId: EntityId) => Promise<CommandResult>;
+  savingIntakeEsrs: Record<string, boolean>;
+  busyTriageByContention: Record<string, TriageActionKind>;
+  triageDraftEdits: Record<string, TriagePlan>;
+  setTriageDraftEdit: (contentionId: EntityId, plan: TriagePlan) => void;
+  clearTriageDraftEdit: (contentionId: EntityId) => void;
   saveTriageDraft: (id: EntityId, plan: TriagePlan) => Promise<CommandResult>;
   approveTriagePlan: (id: EntityId, plan: TriagePlan) => Promise<CommandResult>;
   requestTriageClarification: (id: EntityId, note: string) => Promise<CommandResult>;
@@ -71,7 +77,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [runtime, setRuntime] = useState<WorkspaceRuntime>();
   const [loading, setLoading] = useState(true);
   const [storageError, setStorageError] = useState('');
+  const [savingIntakeEsrs, setSavingIntakeEsrs] = useState<Record<string, boolean>>({});
+  const [busyTriageByContention, setBusyTriageByContention] = useState<Record<string, TriageActionKind>>({});
+  const [triageDraftEdits, setTriageDraftEdits] = useState<Record<string, TriagePlan>>({});
   const stateRef = useRef<WorkspacePayload | undefined>(undefined);
+  const savingIntakeRef = useRef<Set<string>>(new Set());
+  const busyTriageRef = useRef<Set<string>>(new Set());
+  const pollInFlightRef = useRef(false);
+  const inFlightCommandsRef = useRef(0);
   const sessionVersion = useRef(0);
   const queueRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -105,7 +118,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (!workspaceLoaded) return;
     const version = sessionVersion.current;
     const timer = window.setInterval(async () => {
-      if (document.visibilityState !== 'visible') return;
+      if (document.visibilityState !== 'visible' || pollInFlightRef.current || inFlightCommandsRef.current > 0) return;
+      pollInFlightRef.current = true;
       try {
         acceptState(await loadWorkspace(), version);
       } catch (error) {
@@ -114,6 +128,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           stateRef.current = undefined;
           setState(undefined);
         }
+      } finally {
+        pollInFlightRef.current = false;
       }
     }, 2000);
     return () => window.clearInterval(timer);
@@ -132,6 +148,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const run = useCallback((action: string, args: unknown[], message: string): Promise<CommandResult> => {
     const version = sessionVersion.current;
+    inFlightCommandsRef.current += 1;
     const operation = queueRef.current.then(async (): Promise<CommandResult> => {
       const current = stateRef.current;
       if (!current || version !== sessionVersion.current) return { ok: false, message: 'Open the workspace before making changes.' };
@@ -141,14 +158,87 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         return { ok: true, message, value: result.value };
       } catch (error) {
         if (error instanceof WorkspaceApiError && error.status === 409) {
-          await loadWorkspace().then(incoming => acceptState(incoming, version)).catch(() => {});
+          try {
+            const fresh = await loadWorkspace();
+            acceptState(fresh, version);
+            const retried = await sendWorkspaceCommand(action, args, fresh.revision);
+            acceptState(retried.state, version);
+            return { ok: true, message, value: retried.value };
+          } catch (retryError) {
+            if (retryError instanceof WorkspaceApiError && retryError.status === 409) {
+              await loadWorkspace().then(incoming => acceptState(incoming, version)).catch(() => {});
+            }
+            return { ok: false, message: retryError instanceof Error ? retryError.message : 'The action could not be saved.' };
+          }
         }
         return { ok: false, message: error instanceof Error ? error.message : 'The action could not be saved.' };
+      } finally {
+        inFlightCommandsRef.current = Math.max(0, inFlightCommandsRef.current - 1);
       }
     });
     queueRef.current = operation.then(() => undefined, () => undefined);
     return operation;
   }, [acceptState]);
+
+  const setTriageDraftEdit = useCallback((contentionId: EntityId, plan: TriagePlan) => {
+    setTriageDraftEdits(prev => ({ ...prev, [contentionId]: plan }));
+  }, []);
+
+  const clearTriageDraftEdit = useCallback((contentionId: EntityId) => {
+    setTriageDraftEdits(prev => {
+      if (!(contentionId in prev)) return prev;
+      const next = { ...prev };
+      delete next[contentionId];
+      return next;
+    });
+  }, []);
+
+  const runTriageAction = useCallback(async (
+    contentionId: EntityId,
+    kind: TriageActionKind,
+    backendAction: string,
+    args: unknown[],
+    message: string,
+  ): Promise<CommandResult> => {
+    if (busyTriageRef.current.has(contentionId)) {
+      return { ok: false, message: 'An examination plan update is already saving for this contention.' };
+    }
+    busyTriageRef.current.add(contentionId);
+    setBusyTriageByContention(prev => ({ ...prev, [contentionId]: kind }));
+    try {
+      const result = await run(backendAction, args, message);
+      if (result.ok && (kind === 'draft' || kind === 'approve')) {
+        clearTriageDraftEdit(contentionId);
+      }
+      return result;
+    } finally {
+      busyTriageRef.current.delete(contentionId);
+      setBusyTriageByContention(prev => {
+        if (!(contentionId in prev)) return prev;
+        const next = { ...prev };
+        delete next[contentionId];
+        return next;
+      });
+    }
+  }, [run, clearTriageDraftEdit]);
+
+  const validateIntake = useCallback(async (esrId: EntityId): Promise<CommandResult> => {
+    if (savingIntakeRef.current.has(esrId)) {
+      return { ok: false, message: 'Validation is already in progress for this ESR.' };
+    }
+    savingIntakeRef.current.add(esrId);
+    setSavingIntakeEsrs(prev => ({ ...prev, [esrId]: true }));
+    try {
+      return await run('validateIntake', [esrId], 'Intake validated; related contentions are available in Medical Triage.');
+    } finally {
+      savingIntakeRef.current.delete(esrId);
+      setSavingIntakeEsrs(prev => {
+        const next = { ...prev };
+        delete next[esrId];
+        return next;
+      });
+    }
+  }, [run]);
 
   const importIntakeDocument = useCallback(async (body: FormData, esrId?: string, examManagementRequest = false) => {
     const version = sessionVersion.current;
@@ -234,12 +324,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       recordIntakeReceipt: (id, receiptReference) => run('recordIntakeReceipt', [id, receiptReference], 'ESR receipt and acknowledgement recorded.'),
       completeDocumentProcessing: (esrId) => run('completeDocumentProcessing', [esrId], 'Document processing state saved.'),
       updateDocumentCategory: (documentId, category) => run('updateDocumentCategory', [documentId, category], 'Document category updated.'),
-      validateIntake: (esrId) => run('validateIntake', [esrId], 'Intake validated; related contentions are available in Medical Triage.'),
-      saveTriageDraft: (id, plan) => run('saveTriageDraft', [id, plan], 'Examination plan draft saved.'),
-      approveTriagePlan: (id, plan) => run('approveTriagePlan', [id, plan], 'Examination plan approved and sent to Scheduling.'),
-      requestTriageClarification: (id, note) => run('requestTriageClarification', [id, note], 'Clarification request recorded.'),
-      resumeTriageReview: (id, note) => run('resumeTriageReview', [id, note], 'Clarification response recorded. Review reopened.'),
-      authorizeTriageAce: (id, rationale) => run('authorizeTriageAce', [id, rationale], 'ACE eligibility authorized by clinician for this examination.'),
+      validateIntake,
+      savingIntakeEsrs,
+      busyTriageByContention,
+      triageDraftEdits,
+      setTriageDraftEdit,
+      clearTriageDraftEdit,
+      saveTriageDraft: (id, plan) => runTriageAction(id, 'draft', 'saveTriageDraft', [id, plan], 'Examination plan draft saved.'),
+      approveTriagePlan: (id, plan) => runTriageAction(id, 'approve', 'approveTriagePlan', [id, plan], 'Examination plan approved and sent to Scheduling.'),
+      requestTriageClarification: (id, note) => runTriageAction(id, 'clarification', 'requestTriageClarification', [id, note], 'Clarification request recorded.'),
+      resumeTriageReview: (id, note) => runTriageAction(id, 'resume', 'resumeTriageReview', [id, note], 'Clarification response recorded. Review reopened.'),
+      authorizeTriageAce: (id, rationale) => runTriageAction(id, 'authorizeAce', 'authorizeTriageAce', [id, rationale], 'ACE eligibility authorized by clinician for this examination.'),
       escalateDistressAlert: (id, note) => run('escalateDistressAlert', [id, note], 'Clinical safety alert escalated to authorized staff.'),
       prepareTriageDossier,
       getWorkItem,
@@ -282,7 +377,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       recordSimulatedContentionCancellation: (esrId, contentionId, reason) => run('recordSimulatedContentionCancellation', [esrId, contentionId, reason], 'Contention cancellation recorded.'),
       closeESR: (id, note) => run('closeESR', [id, note], 'ESR closure recorded.'),
     };
-  }, [state, loading, storageError, runtime, importIntakeDocument, retryIntakeDocument, receiveIntakeExample, reviewIntakeDocuments, prepareTriageDossier, uploadDBQDocument, uploadDiagnosticDocument, validateAndDraftDBQ, getWorkItem, run]);
+  }, [state, loading, storageError, runtime, savingIntakeEsrs, busyTriageByContention, triageDraftEdits, setTriageDraftEdit, clearTriageDraftEdit, importIntakeDocument, retryIntakeDocument, receiveIntakeExample, reviewIntakeDocuments, prepareTriageDossier, uploadDBQDocument, uploadDiagnosticDocument, validateAndDraftDBQ, validateIntake, getWorkItem, run, runTriageAction]);
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

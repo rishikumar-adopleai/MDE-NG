@@ -214,8 +214,14 @@ def _is_simulated_esr(esr: dict, vet: dict) -> bool:
 
 def _ensure_dossier(state: dict, esr_id: str) -> dict:
     existing = (state.get("triageDossiersByEsrId") or {}).get(esr_id)
-    if existing and existing.get("ruleVersion") == RULES_VERSION and existing.get("promptVersion") == STAGE2_PROMPT_VERSION:
+    esr = (state.get("esrsById") or {}).get(esr_id) or {}
+    proc_status = (esr.get("triageProcessing") or {}).get("status")
+    if existing and existing.get("ruleVersion") == RULES_VERSION and (
+        existing.get("promptVersion") == STAGE2_PROMPT_VERSION or proc_status == "completed"
+    ):
         return existing
+    if proc_status in {"queued", "processing"}:
+        return existing or {}
     # Compute lightweight deterministic NLP + VA Rules dossier on-the-fly without mutating snapshot revision
     scratch = {
         "esrsById": state.get("esrsById", {}),

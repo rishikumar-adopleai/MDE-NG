@@ -189,7 +189,7 @@ function SourceRow({ document, parent, categories, onRetry, onReclassify, busy, 
 export function IntakePage(props: IntakeProps) {
   const { intakeStatus, onIntakeStatus, query, onQueryChange, filters, activeFilter, onFilterChange,
     visibleIds, selectedId, onSelect, onReceived, onHistory, notify, onContinue } = props;
-  const { state, retryIntakeDocument, reviewIntakeException, recordIntakeReceipt,
+  const { state, savingIntakeEsrs, retryIntakeDocument, reviewIntakeException, recordIntakeReceipt,
     completeDocumentProcessing, updateDocumentCategory, validateIntake } = useWorkspace();
   const [section, setSection] = useState<CaseSection>('documents');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -197,9 +197,11 @@ export function IntakePage(props: IntakeProps) {
   const [mobileQueueOpen, setMobileQueueOpen] = useState(false);
   const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
   const [importTarget, setImportTarget] = useState<{ type: 'esr' } | { type: 'source'; esrId: string }>();
-  const [processing, setProcessing] = useState(false);
+  const [savingByEsr, setSavingByEsr] = useState<Record<string, boolean>>({});
   const [receiptReferences, setReceiptReferences] = useState<Record<string, string>>({});
   const caseHeading = useRef<HTMLHeadingElement>(null);
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
   const queueList = useQueueRows(selectedId, mobileQueueOpen, `${intakeStatus}:${activeFilter}:${query}`);
 
   useLayoutEffect(() => {
@@ -207,11 +209,19 @@ export function IntakePage(props: IntakeProps) {
     setSelectedCategory('all');
   }, [selectedId]);
 
+  const mountedRef = useRef(true);
+  const savingCountsRef = useRef<Record<string, number>>({});
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   if (!state) return null;
 
   const esrs = (state.intake?.queueIds ?? []).filter(id => visibleIds.has(id)).map(id => state.esrsById[id]);
   const selected = state.esrsById[selectedId];
   const view = state.intake?.viewsByEsrId[selectedId];
+  const isSaving = Boolean(selected && (savingByEsr[selected.id] || savingIntakeEsrs[selected.id]));
   const caseItem = selected ? toCaseItem(state, selected) : undefined;
   const documents = view?.documentIds.map(id => state.evidenceDocumentsById[id]) ?? [];
   const exceptions = view?.exceptionIds.map(id => state.intakeExceptionsById[id]) ?? [];
@@ -250,14 +260,25 @@ export function IntakePage(props: IntakeProps) {
     });
   }
 
-  async function run(promise: Promise<{ ok: boolean; message: string }>, after?: () => void) {
-    setProcessing(true);
+  async function run(esrId: string, promise: Promise<{ ok: boolean; message: string }>, after?: () => void) {
+    savingCountsRef.current[esrId] = (savingCountsRef.current[esrId] ?? 0) + 1;
+    setSavingByEsr(prev => (prev[esrId] ? prev : { ...prev, [esrId]: true }));
     try {
       const result = await promise;
       notify(result.message);
       if (result.ok) after?.();
     } finally {
-      setProcessing(false);
+      const remaining = Math.max(0, (savingCountsRef.current[esrId] ?? 1) - 1);
+      if (remaining === 0) {
+        delete savingCountsRef.current[esrId];
+        setSavingByEsr(prev => {
+          const next = { ...prev };
+          delete next[esrId];
+          return next;
+        });
+      } else {
+        savingCountsRef.current[esrId] = remaining;
+      }
     }
   }
 
@@ -341,18 +362,7 @@ export function IntakePage(props: IntakeProps) {
             <h2 ref={caseHeading} tabIndex={-1} id="intake-case-title">{caseItem.name}</h2>
             <p>{caseItem.exam}</p>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span className="intake-case-status"><Status text={view.queueLabel} tone={view.canValidate ? 'green' : caseStateTone(view.queueLabel)} /></span>
-            <button
-              type="button"
-              className="intake-icon-button"
-              aria-label="Close case details"
-              title="Close case"
-              onClick={() => onSelect('')}
-            >
-              <X size={18} />
-            </button>
-          </div>
+          <span className="intake-case-status"><Status text={view.queueLabel} tone={view.canValidate ? 'green' : caseStateTone(view.queueLabel)} /></span>
         </header>
 
         <div className="intake-progress-strip">
@@ -403,10 +413,10 @@ export function IntakePage(props: IntakeProps) {
                   <SourceRow
                     key={item.id}
                     document={item} categories={categories} parent={'parentDocumentId' in item ? state.evidenceDocumentsById[item.parentDocumentId] : undefined}
-                    busy={processing}
+                    busy={isSaving}
                     isDuplicate={duplicateDocIds.has(item.id)}
-                    onReclassify={(newCat) => { void run(updateDocumentCategory(item.id, newCat)); }}
-                    onRetry={() => { void run(retryIntakeDocument(selected.id, 'parentDocumentId' in item ? (item as LogicalDocument).parentDocumentId : item.id)); }}
+                    onReclassify={(newCat) => { void run(selected.id, updateDocumentCategory(item.id, newCat)); }}
+                    onRetry={() => { void run(selected.id, retryIntakeDocument(selected.id, 'parentDocumentId' in item ? (item as LogicalDocument).parentDocumentId : item.id)); }}
                   />
                 ))}
               </ul>
@@ -435,10 +445,10 @@ export function IntakePage(props: IntakeProps) {
             )}
             {(logicalMetadataDocs.length > 0 || metadataDocuments.length > 0) && <details className="intake-subdetails intake-metadata-details">
               <summary><ChevronRight size={16} /><HeadingText>Request metadata</HeadingText> ({logicalMetadataDocs.length || metadataDocuments.length})</summary>
-              <ul className="intake-sources review-document-list" aria-label="Request metadata documents">{(logicalMetadataDocs.length ? logicalMetadataDocs : metadataDocuments).map(doc => <SourceRow key={doc.id} document={doc} parent={'parentDocumentId' in doc ? state.evidenceDocumentsById[doc.parentDocumentId] : undefined} categories={categories} busy={processing} />)}</ul>
+              <ul className="intake-sources review-document-list" aria-label="Request metadata documents">{(logicalMetadataDocs.length ? logicalMetadataDocs : metadataDocuments).map(doc => <SourceRow key={doc.id} document={doc} parent={'parentDocumentId' in doc ? state.evidenceDocumentsById[doc.parentDocumentId] : undefined} categories={categories} busy={isSaving} />)}</ul>
             </details>}
-            {view.canProcessLegacy && <button type="button" className="intake-text-action" disabled={processing}
-              onClick={() => { void run(completeDocumentProcessing(selected.id)); }}><RefreshCw size={15} /> Update document status</button>}
+            {view.canProcessLegacy && <button type="button" className="intake-text-action" disabled={isSaving}
+              onClick={() => { void run(selected.id, completeDocumentProcessing(selected.id)); }}><RefreshCw size={15} /> Update document status</button>}
             <DocumentReviewAssistant esrId={selected.id} />
           </div>
 
@@ -456,27 +466,27 @@ export function IntakePage(props: IntakeProps) {
                   <label className="intake-field"><span>Review note</span><textarea rows={2} value={note} aria-label={`Review note for ${issue.title}`}
                     onChange={event => setReviewNotes(notes => ({ ...notes, [issue.id]: event.target.value }))} /></label>
                   <div className="intake-issue-actions">
-                    {issue.status === 'open' && <button type="button" className="intake-secondary" disabled={processing || !note.trim()}
-                      onClick={() => { void run(reviewIntakeException(issue.id, 'escalated', note)); }}>Escalate</button>}
+                    {issue.status === 'open' && <button type="button" className="intake-secondary" disabled={isSaving || !note.trim()}
+                      onClick={() => { void run(selected.id, reviewIntakeException(issue.id, 'escalated', note)); }}>Escalate</button>}
                     {issue.documentId && (
                       <button
                         type="button"
                         className="intake-secondary"
                         style={{ color: '#b91c1c', borderColor: '#fca5a5' }}
-                        disabled={processing}
+                        disabled={isSaving}
                         onClick={() => {
                           const exclusionNote = note.trim() || 'Source file excluded from evidence by staff.';
-                          void run(reviewIntakeException(issue.id, 'excluded', exclusionNote));
+                          void run(selected.id, reviewIntakeException(issue.id, 'excluded', exclusionNote));
                         }}
                         title="Exclude the entire source file from this case’s evidence"
                       >
                         <Trash2 size={16} /> Exclude source file
                       </button>
                     )}
-                    <button type="button" className="intake-secondary" disabled={processing}
+                    <button type="button" className="intake-secondary" disabled={isSaving}
                       onClick={() => {
                         const resolveNote = note.trim() || 'Staff verified and approved document to keep.';
-                        void run(reviewIntakeException(issue.id, 'resolved', resolveNote));
+                        void run(selected.id, reviewIntakeException(issue.id, 'resolved', resolveNote));
                       }}
                       title="Keep this document and remove the duplicate/action flags"
                     >
@@ -512,10 +522,17 @@ export function IntakePage(props: IntakeProps) {
           {!view.receiptReady ? <div className="intake-receipt-action">
             <label className="intake-field"><span>Receipt reference</span><input value={receiptReference}
               placeholder="Automatic if left blank" onChange={event => setReceiptReferences(values => ({ ...values, [selectedId]: event.target.value }))} /></label>
-            <button type="button" className="intake-primary" disabled={processing} onClick={() => { void run(recordIntakeReceipt(selected.id, receiptReference)); }}>Record acknowledgement</button>
-          </div> : <button type="button" className="intake-primary" disabled={processing || !view.canValidate}
-            onClick={() => { void run(validateIntake(selected.id), () => onContinue(selected.id)); }}>
-            {processing ? 'Saving…' : 'Validate and send to Triage'}<ArrowRight size={17} />
+            <button type="button" className="intake-primary" disabled={isSaving} onClick={() => { void run(selected.id, recordIntakeReceipt(selected.id, receiptReference)); }}>Record acknowledgement</button>
+          </div> : <button type="button" className="intake-primary" disabled={isSaving || !view.canValidate}
+            onClick={() => {
+              const targetId = selected.id;
+              void run(targetId, validateIntake(targetId), () => {
+                if (mountedRef.current && selectedIdRef.current === targetId) {
+                  onContinue(targetId);
+                }
+              });
+            }}>
+            {isSaving ? 'Saving…' : 'Validate and send to Triage'}<ArrowRight size={17} />
           </button>}
         </footer>
       </div> : <section className="intake-case-empty"><Inbox size={28} /><h2><HeadingText>No case selected</HeadingText></h2><p>Choose a case from the queue or receive a new ESR.</p></section>}

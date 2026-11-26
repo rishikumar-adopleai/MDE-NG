@@ -1051,7 +1051,7 @@ export function SchedulingPage({
   }, [deselected, schedFilter, priorityFilter, query, visibleCases, selectedId, onSelect]);
 
   return (
-    <div className="intake-page">
+    <div className="intake-page queue-workbench">
       <StageHeading
         stage="Scheduling"
         description="Match Stage 2 approved examinations to the nearest facility, license-valid doctor, and open time slot."
@@ -1131,13 +1131,8 @@ export function SchedulingPage({
                       className="intake-queue-row"
                       aria-pressed={activeCase?.esrId === c.esrId}
                       onClick={() => {
-                        if (activeCase?.esrId === c.esrId) {
-                          setDeselected(true);
-                          onSelect('');
-                        } else {
-                          setDeselected(false);
-                          onSelect(c.esrId);
-                        }
+                        setDeselected(false);
+                        onSelect(c.esrId);
                       }}
                     >
                       <span className="intake-queue-row-main">
@@ -1187,7 +1182,12 @@ export function SchedulingPage({
         </aside>
 
         {activeCase ? (
-          <section className="intake-case-card triage-case-workspace">
+          <section
+            className="intake-case-card triage-case-workspace queue-detail"
+            key={activeCase.esrId}
+            aria-label={`Scheduling details for ${activeCase.claimantName}`}
+            tabIndex={0}
+          >
             <header className="triage-case-header">
               <div className="triage-claimant-block">
                 <span className="intake-avatar">{activeCase.initials}</span>

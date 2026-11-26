@@ -329,6 +329,8 @@ def finish_job(job_id: str, lease: str, document_id: str, result: dict) -> None:
 
 def enqueue_triage_job(db: Session, esr_id: str, *, force: bool = False, evidence_digest: str = "") -> bool:
     """Idempotently enqueue a Stage 2 triage preparation job unless an active one is already queued/running."""
+    from app.services.triage_store import register_or_reuse_triage_job
+
     active_jobs = db.execute(
         select(OutboxJob).where(
             OutboxJob.task_name == TRIAGE_TASK_NAME,
@@ -338,7 +340,9 @@ def enqueue_triage_job(db: Session, esr_id: str, *, force: bool = False, evidenc
     for existing in active_jobs:
         payload = existing.payload or {}
         if payload.get("esrId") == esr_id and (not evidence_digest or payload.get("evidenceDigest") == evidence_digest):
+            register_or_reuse_triage_job(db, esr_id, evidence_digest or str(payload.get("evidenceDigest") or ""))
             return False
+    register_or_reuse_triage_job(db, esr_id, evidence_digest)
     db.add(OutboxJob(
         task_name=TRIAGE_TASK_NAME,
         status="queued",
@@ -354,112 +358,156 @@ def enqueue_triage_job(db: Session, esr_id: str, *, force: bool = False, evidenc
 
 
 def finish_triage_job(job_id: str, lease: str, esr_id: str, *, force: bool = False) -> None:
+    from copy import deepcopy
     from app.services.triage_pipeline import run_triage_pipeline_for_state
+    from app.services.triage_store import (
+        compute_current_esr_digest,
+        esr_triage_lock,
+        finalize_triage_job,
+        merge_stage2_result_into_state,
+        persist_stage2_normalized,
+        register_or_reuse_triage_job,
+    )
 
-    # Step 1: Mark processing state visible to UI immediately
-    for _ in range(3):
-        with SessionLocal() as db:
-            job = db.get(OutboxJob, job_id)
-            if not job or job.status != lease:
-                return
-            state = get_state(db)
-            esr = state["esrsById"].get(esr_id)
-            if esr is None:
-                job.status = "completed"
-                db.commit()
-                return
-            now = timestamp()
-            touch(esr, now, triageProcessing={"status": "processing", "startedAt": now})
-            try:
-                save_state(db, state, esr_id)
-                db.commit()
-                break
-            except HTTPException as exc:
-                if exc.status_code != 409:
-                    raise
-
-    # Step 2: Run Stage 2 NLP + Search + Rules + LLM outside DB transaction, then persist atomically
-    with SessionLocal() as db:
-        snapshot_state = get_state(db)
-    allow_llm = settings.intake_provider == "azure-openai"
-    computed_state = dict(snapshot_state)
-    try:
-        dossier = run_triage_pipeline_for_state(computed_state, esr_id, allow_llm=allow_llm, force=force)
-    except Exception as exc:
-        logger.exception("Stage 2 triage job failed for ESR %s", esr_id)
-        with SessionLocal() as db:
-            job = db.get(OutboxJob, job_id)
-            if not job or job.status != lease:
-                return
-            payload = dict(job.payload or {})
-            attempts = int(payload.get("attempts", 0)) + 1
-            max_attempts = int(payload.get("maxAttempts", 3))
-            payload["attempts"] = attempts
-            payload["lastError"] = str(exc)[:300]
-            job.payload = payload
-            if attempts < max_attempts:
-                backoff_sec = min(300, 15 * (2 ** (attempts - 1)))
-                job.status = f"run:{int(time.time()) + backoff_sec:010d}"
-            else:
-                job.status = "dead-letter"
+    with esr_triage_lock(esr_id):
+        # Step 1: Mark processing state visible to UI immediately & record DB job
+        expected_digest = ""
+        triage_job_id = ""
+        for _ in range(4):
+            with SessionLocal() as db:
+                job = db.get(OutboxJob, job_id)
+                if not job or job.status != lease:
+                    return
                 state = get_state(db)
-                if esr := state.get("esrsById", {}).get(esr_id):
-                    now = timestamp()
-                    touch(esr, now, triageProcessing={
-                        "status": "failed",
-                        "failedAt": now,
-                        "error": str(exc)[:300],
-                        "retryable": True,
-                    })
-                    try:
-                        save_state(db, state, esr_id)
-                    except HTTPException:
-                        pass
-            db.commit()
-        return
+                esr = state["esrsById"].get(esr_id)
+                if esr is None:
+                    job.status = "completed"
+                    db.commit()
+                    return
+                expected_digest = compute_current_esr_digest(state, esr_id)
+                existing_proc = esr.get("triageProcessing") or {}
+                existing_dossier = (state.get("triageDossiersByEsrId") or {}).get(esr_id)
+                if (
+                    not force
+                    and existing_proc.get("status") == "completed"
+                    and existing_dossier
+                    and existing_dossier.get("sourceDigest") == expected_digest
+                    and (settings.intake_provider != "azure-openai" or existing_dossier.get("aiAttempted"))
+                ):
+                    job.status = "completed"
+                    db.commit()
+                    return
+                triage_job, _ = register_or_reuse_triage_job(db, esr_id, expected_digest, worker_lease=lease)
+                triage_job_id = triage_job.job_id
+                now = timestamp()
+                touch(esr, now, triageProcessing={"status": "processing", "startedAt": now, "evidenceDigest": expected_digest})
+                try:
+                    save_state(db, state, esr_id)
+                    db.commit()
+                    break
+                except HTTPException as exc:
+                    if exc.status_code != 409:
+                        raise
+                    db.rollback()
 
-    for _ in range(4):
+        # Step 2: Run Stage 2 NLP + Search + Rules + LLM ONCE outside DB write lock
         with SessionLocal() as db:
-            job = db.get(OutboxJob, job_id)
-            if not job or job.status != lease:
-                return
-            state = get_state(db)
-            esr = state["esrsById"].get(esr_id)
-            if esr is None:
-                job.status = "completed"
-                db.commit()
-                return
-            now = timestamp()
-            if dossier:
-                facts_store = state.setdefault("clinicalFactsById", {})
-                for k in [key for key, row in facts_store.items() if row.get("esrId") == esr_id]:
-                    del facts_store[k]
-                for k, row in (computed_state.get("clinicalFactsById") or {}).items():
-                    if row.get("esrId") == esr_id:
-                        facts_store[k] = row
-                state.setdefault("triageDossiersByEsrId", {})[esr_id] = dossier
-                touch(esr, now, triageProcessing={
-                    "status": "completed",
-                    "completedAt": now,
-                    "sourceDigest": dossier.get("sourceDigest", ""),
-                    "factCount": dossier.get("factCount", 0),
-                    "aiProvider": dossier.get("aiProvider", "local"),
-                    "ruleVersion": dossier.get("ruleVersion", ""),
-                })
-                activity(state, esr_id, esr_id, "triage-dossier-prepared", "triage-worker", now)
-            else:
-                touch(esr, now, triageProcessing={"status": "completed", "completedAt": now})
-            try:
-                save_state(db, state, esr_id)
-            except HTTPException as exc:
-                if exc.status_code != 409:
-                    raise
-                continue
-            changed = db.execute(update(OutboxJob).where(OutboxJob.id == job_id, OutboxJob.status == lease)
-                                 .values(status="completed"))
-            if changed.rowcount == 1:
+            snapshot_state = get_state(db)
+        expected_digest = expected_digest or compute_current_esr_digest(snapshot_state, esr_id)
+        allow_llm = settings.intake_provider == "azure-openai"
+        computed_state = deepcopy(snapshot_state)
+        try:
+            dossier = run_triage_pipeline_for_state(computed_state, esr_id, allow_llm=allow_llm, force=force)
+        except Exception as exc:
+            logger.exception("Stage 2 triage job failed for ESR %s", esr_id)
+            with SessionLocal() as db:
+                job = db.get(OutboxJob, job_id)
+                if not job or job.status != lease:
+                    return
+                payload = dict(job.payload or {})
+                attempts = int(payload.get("attempts", 0)) + 1
+                max_attempts = int(payload.get("maxAttempts", 3))
+                payload["attempts"] = attempts
+                payload["lastError"] = str(exc)[:300]
+                job.payload = payload
+                if triage_job_id:
+                    finalize_triage_job(db, triage_job_id, "failed" if attempts >= max_attempts else "queued", last_error=str(exc))
+                if attempts < max_attempts:
+                    backoff_sec = min(300, 15 * (2 ** (attempts - 1)))
+                    job.status = f"run:{int(time.time()) + backoff_sec:010d}"
+                else:
+                    job.status = "dead-letter"
+                    state = get_state(db)
+                    if esr := state.get("esrsById", {}).get(esr_id):
+                        now = timestamp()
+                        touch(esr, now, triageProcessing={
+                            "status": "failed",
+                            "failedAt": now,
+                            "error": str(exc)[:300],
+                            "retryable": True,
+                        })
+                        try:
+                            save_state(db, state, esr_id)
+                        except HTTPException:
+                            pass
                 db.commit()
             return
+
+        # Step 3: Atomic merge onto latest snapshot state (checks evidence version unchanged; never re-runs LLM)
+        for _ in range(5):
+            with SessionLocal() as db:
+                job = db.get(OutboxJob, job_id)
+                if not job or job.status != lease:
+                    return
+                state = get_state(db)
+                esr = state["esrsById"].get(esr_id)
+                if esr is None:
+                    if triage_job_id:
+                        finalize_triage_job(db, triage_job_id, "completed")
+                    job.status = "completed"
+                    db.commit()
+                    return
+                now = timestamp()
+                current_digest = compute_current_esr_digest(state, esr_id)
+                evidence_changed = bool(expected_digest and current_digest and current_digest != expected_digest)
+                merge_stage2_result_into_state(state, esr_id, computed_state, dossier, now, mark_stale=evidence_changed)
+                if dossier:
+                    esr_facts = [
+                        row for row in (computed_state.get("clinicalFactsById") or {}).values()
+                        if row.get("esrId") == esr_id
+                    ]
+                    persist_stage2_normalized(
+                        db,
+                        esr_id,
+                        dossier,
+                        esr_facts,
+                        document_count=len(esr.get("evidenceDocumentIds") or []),
+                        is_stale=evidence_changed,
+                    )
+                    activity(
+                        state,
+                        esr_id,
+                        esr_id,
+                        "triage-dossier-stale" if evidence_changed else "triage-dossier-prepared",
+                        "triage-worker",
+                        now,
+                    )
+                if triage_job_id:
+                    finalize_triage_job(db, triage_job_id, "stale" if evidence_changed else "completed")
+                if evidence_changed:
+                    enqueue_triage_job(db, esr_id, force=True, evidence_digest=current_digest)
+                try:
+                    save_state(db, state, esr_id)
+                except HTTPException as exc:
+                    if exc.status_code != 409:
+                        raise
+                    db.rollback()
+                    continue
+                changed = db.execute(update(OutboxJob).where(OutboxJob.id == job_id, OutboxJob.status == lease)
+                                     .values(status="completed"))
+                if changed.rowcount == 1:
+                    db.commit()
+                return
 
 
 def process_next_job() -> bool:

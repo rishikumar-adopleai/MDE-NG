@@ -126,3 +126,79 @@ class Stage3TimeSlot(Base):
     duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     modality: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     slot_status: Mapped[str] = mapped_column(String(32), nullable=False, default="available", index=True)
+
+
+class Stage2ClinicalFact(Base):
+    __tablename__ = "clinical_facts"
+    __table_args__ = (Index("ix_clinical_facts_esr_doc", "esr_id", "document_id"),)
+
+    fact_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    esr_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    document_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_hash: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    fact_json: Mapped[dict[str, Any]] = mapped_column(JsonType, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
+
+
+class Stage2TriageDossier(Base):
+    __tablename__ = "triage_dossiers"
+
+    esr_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_digest: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    ai_provider: Mapped[str] = mapped_column(String(80), nullable=False, default="local")
+    case_overview: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    is_stale: Mapped[bool] = mapped_column(Integer, nullable=False, default=0)
+    dossier_json: Mapped[dict[str, Any]] = mapped_column(JsonType, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
+
+
+class Stage2ContentionSummary(Base):
+    __tablename__ = "contention_summaries"
+    __table_args__ = (Index("ix_contention_summaries_esr", "esr_id"),)
+
+    contention_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    esr_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_digest: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    summary_provider: Mapped[str] = mapped_column(String(80), nullable=False, default="local")
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JsonType, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
+
+
+class Stage2TriageJob(Base):
+    __tablename__ = "triage_jobs"
+    __table_args__ = (Index("ix_triage_jobs_esr_status", "esr_id", "status"),)
+
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
+    esr_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    evidence_digest: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+    worker_lease: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
+
+
+class Stage2EvidenceVersion(Base):
+    __tablename__ = "evidence_versions"
+
+    esr_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    evidence_digest: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    document_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fact_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
+
+
+class Stage2ProcessingAudit(Base):
+    __tablename__ = "processing_audit"
+    __table_args__ = (Index("ix_processing_audit_esr", "esr_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
+    esr_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_digest: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    provider: Mapped[str] = mapped_column(String(80), nullable=False, default="local")
+    retries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failover_triggered: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fallback_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    audit_json: Mapped[dict[str, Any]] = mapped_column(JsonType, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)

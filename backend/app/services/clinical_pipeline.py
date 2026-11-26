@@ -11,6 +11,10 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import settings
+from app.services.agent_prompts import (
+    STAGE4_EXTRACTION_PROMPT,
+    STAGE4_VALIDATION_AND_REVIEW_PROMPT,
+)
 from app.services.intake_processing import (
     DocumentProcessingError,
     azure_review_completion,
@@ -20,26 +24,6 @@ from app.services.intake_processing import (
 
 logger = logging.getLogger(__name__)
 STAGE4_PROMPT_VERSION = "stage4-clinical-copilot-v1.0"
-
-STAGE4_EXTRACTION_PROMPT = (
-    "You are a VA Medical Disability Examination (MDE-NG) clinical documentation extractor assisting an examining clinician. "
-    "Extract structured DBQ fields ONLY from the supplied uploaded DBQ document pages. "
-    "Rules: "
-    "1. Never invent measurements, diagnoses, dates, or clinical opinions not present in the document. "
-    "2. Populate history, findings, rationale, recordsReviewed, diagnosisOutcome ('Established' or 'Could not be established'), "
-    "diagnosisDetails, and remarks faithfully from the text. "
-    "3. Extract any stated claimant name or identifier found in the document into detectedClaimantName so identity can be verified. "
-    "4. Return strict JSON matching the schema."
-)
-
-STAGE4_VALIDATION_AND_REVIEW_PROMPT = (
-    "You are a VA Medical Disability Examination (MDE-NG) clinical compliance validator and medical review drafter assisting the examining clinician. "
-    "Rules: "
-    "1. Cross-check the completed DBQ findings and diagnostic results against the Veteran's claimed condition, the VA-requested DBQ scope, and Stage 2 clinical gaps. "
-    "2. Flag any missing required clinical details, scope/condition mismatches, contradictions, or unaddressed Stage 2 'Collect During Exam' items as validationAlerts. "
-    "3. Draft a concise, objective Draft Medical Review (summary, keyFindings, diagnosticSummary) summarizing how the exam and diagnostics address the VA request, citing exact source labels/pages. "
-    "4. Never assign disability percentage ratings, never invent findings, and label the output as a draft awaiting clinician approval."
-)
 
 
 class ExtractedDBQFields(BaseModel):

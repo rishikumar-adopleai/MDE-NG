@@ -17,10 +17,30 @@ export class WorkspaceApiError extends Error {
 
 const apiBase = import.meta.env.BASE_URL ? import.meta.env.BASE_URL.replace(/\/$/, '') + '/api' : '/api';
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+async function request<T>(path: string, options?: RequestInit, timeoutMs?: number): Promise<T> {
   const headers = new Headers(options?.headers);
   headers.set('Accept', 'application/json');
-  const response = await fetch(`${apiBase}${path}`, { credentials: 'same-origin', ...options, headers });
+  const effectiveTimeout = timeoutMs ?? (options?.body instanceof FormData ? 120000 : 25000);
+  const controller = new AbortController();
+  const externalSignal = options?.signal;
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+  const timer = globalThis.setTimeout(() => controller.abort(), effectiveTimeout);
+  let response: Response;
+  try {
+    response = await fetch(`${apiBase}${path}`, { credentials: 'same-origin', ...options, headers, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError' && !externalSignal?.aborted) {
+      throw new WorkspaceApiError(408, 'The workspace request timed out. Please retry.');
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => undefined);
     throw new WorkspaceApiError(response.status, typeof body?.detail === 'string' ? body.detail : `Workspace request failed (${response.status}).`);
@@ -97,7 +117,7 @@ export function generateStageReview(stage: StageKey, entityId: string, signal?: 
     signal,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ stage, entityId }),
-  });
+  }, 120000);
 }
 
 export function requestIntakeDocumentReview(esrId: string, signal: AbortSignal, disposition?: {
@@ -108,13 +128,14 @@ export function requestIntakeDocumentReview(esrId: string, signal: AbortSignal, 
     signal, method: disposition ? 'PUT' : 'POST',
     headers: disposition && { 'Content-Type': 'application/json' },
     body: disposition && JSON.stringify(disposition),
-  });
+  }, 120000);
 }
 
 export function triggerTriagePrepare(esrId: string, force = false) {
   return request<{ ok: boolean; esrId: string; state: WorkspacePayload }>(
     `/triage/esrs/${encodeURIComponent(esrId)}/prepare?force=${force ? 'true' : 'false'}`,
     { method: 'POST' },
+    120000,
   );
 }
 

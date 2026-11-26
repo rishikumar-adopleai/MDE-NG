@@ -36,6 +36,55 @@ import { resultEntityId } from './StageWorkbench';
 import { documentName, formatCategory, practiceCaseLabel } from './presentation';
 import { Status } from './shared';
 
+function previewSummaryText(text: string, maxChars = 300): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxChars + 40) return trimmed;
+  const slice = trimmed.slice(0, maxChars);
+  const sentenceEnd = Math.max(slice.lastIndexOf('. '), slice.lastIndexOf('! '), slice.lastIndexOf('? '));
+  if (sentenceEnd >= Math.floor(maxChars * 0.45)) {
+    return slice.slice(0, sentenceEnd + 1);
+  }
+  const wordEnd = slice.lastIndexOf(' ');
+  return `${(wordEnd > 40 ? slice.slice(0, wordEnd) : slice).trimEnd()}…`;
+}
+
+function ExpandableSummary({
+  text,
+  className,
+  maxChars = 300,
+}: {
+  text: string;
+  className: string;
+  maxChars?: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const trimmed = text.trim();
+  const isLong = trimmed.length > maxChars + 40;
+  const shownText = !isLong || expanded ? trimmed : previewSummaryText(trimmed, maxChars);
+
+  return (
+    <div>
+      <p className={className} style={{ whiteSpace: 'pre-line', marginBottom: isLong ? '6px' : undefined }}>
+        {shownText}
+      </p>
+      {isLong && (
+        <button
+          type="button"
+          className="intake-text-action"
+          aria-expanded={expanded}
+          onClick={() => setExpanded(v => !v)}
+        >
+          <ChevronDown
+            size={15}
+            style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}
+          />
+          {expanded ? 'Show less' : 'View more'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 type QueueFilter = 'all' | 'exception' | 'review' | 'ready';
 type ExamChoice = TriageWorkspaceView['examChoices'][number];
 type SourceTarget = {
@@ -243,36 +292,52 @@ function ContentionPlanningCard({
   onApproved: (esrId: string, title: string, entityId?: string) => void;
   onScheduling?: (esrId: string, entityId?: string) => void;
 }) {
-  const { saveTriageDraft, approveTriagePlan, requestTriageClarification, resumeTriageReview, authorizeTriageAce } = useWorkspace();
+  const {
+    busyTriageByContention,
+    triageDraftEdits,
+    setTriageDraftEdit,
+    saveTriageDraft,
+    approveTriagePlan,
+    requestTriageClarification,
+    resumeTriageReview,
+    authorizeTriageAce,
+  } = useWorkspace();
   const row: TriageRowView | undefined | null = entry.row;
   const dossier = entry.dossier ?? row?.dossier;
   const approvedReq = entry.approvedRequirement;
   const isApproved = entry.status === 'approved-for-exam';
+  const activeBusyAction = busyTriageByContention[entry.contentionId];
 
-  const [plan, setPlan] = useState<TriagePlan>(() =>
-    row?.initialPlan ?? {
-      examCode: dossier?.examSuggestion?.examCode || '',
-      modality: '',
-      dbqs: dossier?.examSuggestion?.suggestedDbqs || [],
-      diagnostics: [],
-      rationale: '',
-    },
-  );
+  const basePlan: TriagePlan = row?.initialPlan ?? {
+    examCode: dossier?.examSuggestion?.examCode || '',
+    modality: '',
+    dbqs: dossier?.examSuggestion?.suggestedDbqs || [],
+    diagnostics: [],
+    rationale: '',
+  };
+  const plan = triageDraftEdits[entry.contentionId] ?? basePlan;
+  const updatePlan = (nextOrUpdater: TriagePlan | ((current: TriagePlan) => TriagePlan)) => {
+    const resolved = typeof nextOrUpdater === 'function' ? nextOrUpdater(plan) : nextOrUpdater;
+    setTriageDraftEdit(entry.contentionId, resolved);
+  };
+
   const [expandedEvidence, setExpandedEvidence] = useState(false);
   const [editOpen, setEditOpen] = useState(!isApproved && !approvedReq);
   const [clarificationOpen, setClarificationOpen] = useState(false);
   const [aceAuthOpen, setAceAuthOpen] = useState(false);
   const [aceNote, setAceNote] = useState('');
   const [note, setNote] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [localBusy, setLocalBusy] = useState(false);
   const [error, setError] = useState('');
   const [feedback, setFeedback] = useState('');
-
+  const busy = Boolean(localBusy || activeBusyAction);
+  const cardMountedRef = useRef(true);
   useEffect(() => {
-    if (row?.initialPlan) {
-      setPlan(row.initialPlan);
-    }
-  }, [entry.contentionId, row?.initialPlan.examCode, row?.aceAuthorized]);
+    cardMountedRef.current = true;
+    return () => {
+      cardMountedRef.current = false;
+    };
+  }, []);
 
   const choice = choices.find(exam => exam.code === plan.examCode);
   const rulesEval = dossier?.rulesEval;
@@ -305,14 +370,15 @@ function ContentionPlanningCard({
   );
 
   const changeValues = (field: 'dbqs' | 'diagnostics', value: string, selected: boolean) => {
-    setPlan(current => ({
+    updatePlan(current => ({
       ...current,
       [field]: selected ? [...current[field], value] : current[field].filter(v => v !== value),
     }));
   };
 
   const runAction = async (action: 'draft' | 'approve' | 'clarification' | 'resume' | 'authorizeAce') => {
-    setBusy(true);
+    if (busy) return;
+    setLocalBusy(true);
     setError('');
     setFeedback('');
     try {
@@ -326,6 +392,7 @@ function ContentionPlanningCard({
             : action === 'resume'
               ? resumeTriageReview(id, note)
               : authorizeTriageAce(id, aceNote));
+      if (!cardMountedRef.current) return;
       if (!result.ok) {
         setError(result.message);
         return;
@@ -343,7 +410,9 @@ function ContentionPlanningCard({
       }
       setFeedback(result.message);
     } finally {
-      setBusy(false);
+      if (cardMountedRef.current) {
+        setLocalBusy(false);
+      }
     }
   };
 
@@ -396,7 +465,11 @@ function ContentionPlanningCard({
             <span className="triage-negation-note">{dossier.negatedCount} negated/denied statement(s) separated</span>
           )}
         </div>
-        <p className="triage-card-summary">{dossier?.aiSummary || 'No clinical summary extracted yet.'}</p>
+        <ExpandableSummary
+          key={`${entry.contentionId}-summary`}
+          text={dossier?.aiSummary || 'No clinical summary extracted yet.'}
+          className="triage-card-summary"
+        />
 
         {previewCites.length > 0 && (
           <div className="triage-citation-row" aria-label="Key evidence citations">
@@ -666,7 +739,7 @@ function ContentionPlanningCard({
                         value={plan.examCode}
                         onChange={e => {
                           const selected = choices.find(exam => exam.code === e.target.value);
-                          setPlan({
+                          updatePlan({
                             examCode: e.target.value,
                             modality: '',
                             dbqs: selected ? [selected.primaryDbq] : [],
@@ -689,7 +762,7 @@ function ContentionPlanningCard({
                       <select
                         disabled={!choice}
                         value={plan.modality}
-                        onChange={e => setPlan({ ...plan, modality: e.target.value as TriagePlan['modality'] })}
+                        onChange={e => updatePlan({ ...plan, modality: e.target.value as TriagePlan['modality'] })}
                       >
                         <option value="">Choose pathway</option>
                         {permittedForExam.map(value => (
@@ -728,7 +801,7 @@ function ContentionPlanningCard({
                           <div className="triage-action-buttons">
                             <button type="button" className="intake-secondary" onClick={() => setAceAuthOpen(false)}>Cancel</button>
                             <button type="button" className="intake-primary" disabled={!aceNote.trim()} onClick={() => void runAction('authorizeAce')}>
-                              Record ACE authorization
+                              {activeBusyAction === 'authorizeAce' ? 'Authorizing…' : 'Record ACE authorization'}
                             </button>
                           </div>
                         </div>
@@ -788,7 +861,7 @@ function ContentionPlanningCard({
                       rows={2}
                       maxLength={3000}
                       placeholder="Enter brief clinical reason for your selected pathway or DBQ choice (e.g., 'In-person ROM exam required')..."
-                      onChange={e => setPlan({ ...plan, rationale: e.target.value })}
+                      onChange={e => updatePlan({ ...plan, rationale: e.target.value })}
                     />
                   </label>
 
@@ -804,15 +877,15 @@ function ContentionPlanningCard({
                     </div>
                     <div className="triage-action-buttons">
                       <button type="button" className="intake-secondary" onClick={() => void runAction('draft')}>
-                        Save draft
+                        {activeBusyAction === 'draft' ? 'Saving…' : 'Save draft'}
                       </button>
                       <button
                         type="button"
                         className="intake-primary"
-                        disabled={!canApprove}
+                        disabled={!canApprove || busy}
                         onClick={() => void runAction('approve')}
                       >
-                        Approve Plan <ArrowRight size={15} />
+                        {activeBusyAction === 'approve' ? 'Approving…' : 'Approve Plan'} <ArrowRight size={15} />
                       </button>
                     </div>
                   </div>
@@ -826,7 +899,7 @@ function ContentionPlanningCard({
                       <div className="triage-action-buttons">
                         <button type="button" className="intake-secondary" onClick={() => setClarificationOpen(false)}>Cancel</button>
                         <button type="button" className="intake-primary" disabled={!note.trim()} onClick={() => void runAction('clarification')}>
-                          Send clarification request
+                          {activeBusyAction === 'clarification' ? 'Sending…' : 'Send clarification request'}
                         </button>
                       </div>
                     </div>
@@ -860,8 +933,20 @@ export function TriagePage({
   const [showCaseEvidence, setShowCaseEvidence] = useState(false);
   const [sourceDrawer, setSourceDrawer] = useState<SourceTarget>();
   const [approvedBanner, setApprovedBanner] = useState<{ esrId: string; title: string; entityId?: string }>();
-  const [preparing, setPreparing] = useState(false);
+  const [preparingByEsr, setPreparingByEsr] = useState<Record<string, boolean>>({});
+  const [completingByEsr, setCompletingByEsr] = useState<Record<string, boolean>>({});
+  const [progressByEsr, setProgressByEsr] = useState<Record<string, number>>({});
+  const [prepareErrorsByEsr, setPrepareErrorsByEsr] = useState<Record<string, string>>({});
+  const inFlightEsrs = useRef<Set<string>>(new Set());
   const caseHeading = useRef<HTMLHeadingElement>(null);
+  const triageMountedRef = useRef(true);
+  const activeEsrIdRef = useRef('');
+  useEffect(() => {
+    triageMountedRef.current = true;
+    return () => {
+      triageMountedRef.current = false;
+    };
+  }, []);
 
   const { esrsById = {}, contentionsById = {}, evidenceDocumentsById = {}, triage } = state ?? {};
   const caseIds = triage?.queueIds ?? [...new Set((triage?.rows ?? []).map(r => r.esrId))];
@@ -904,20 +989,119 @@ export function TriagePage({
     setShowCaseEvidence(false);
   }, [activeCase?.esrId]);
 
+  const activeEsrId = activeCase?.esrId ?? '';
+  activeEsrIdRef.current = activeEsrId;
+  const activeProcStatus = activeCase?.processing?.status;
+  const isBackgroundProcessing = activeProcStatus === 'queued' || activeProcStatus === 'processing';
+  const isPreparingActive = Boolean(activeEsrId && preparingByEsr[activeEsrId]);
+  const isCompletingActive = Boolean(activeEsrId && completingByEsr[activeEsrId]);
+  const isAnalyzingActive = isBackgroundProcessing || isPreparingActive || isCompletingActive;
+  const activePrepareError = activeEsrId ? (prepareErrorsByEsr[activeEsrId] ?? '') : '';
+
+  // Smooth per-ESR progress tracking (10% -> 100%) without cross-contaminating other cases
   useEffect(() => {
-    if (activeCase?.esrId && activeCase.processing?.status === 'queued' && !preparing) {
-      void handlePrepareNow(activeCase.esrId);
+    const busyIds = new Set<string>();
+    for (const [id, c] of Object.entries(casesByEsr)) {
+      if (c.processing?.status === 'queued' || c.processing?.status === 'processing' || preparingByEsr[id]) {
+        busyIds.add(id);
+      }
     }
-  }, [activeCase?.esrId, activeCase?.processing?.status]);
+    if (busyIds.size === 0) return;
 
-  const isBackgroundProcessing = activeCase?.processing?.status === 'queued' || activeCase?.processing?.status === 'processing';
+    setProgressByEsr(prev => {
+      const next = { ...prev };
+      let changed = false;
+      for (const id of busyIds) {
+        if (!(id in next) || next[id] < 10) {
+          next[id] = casesByEsr[id]?.processing?.status === 'queued' && !preparingByEsr[id] ? 10 : 20;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
 
-  const handlePrepareNow = async (esrId: string) => {
-    setPreparing(true);
+    const timer = window.setInterval(() => {
+      setProgressByEsr(prev => {
+        const next = { ...prev };
+        let changed = false;
+        for (const id of busyIds) {
+          const isQueued = casesByEsr[id]?.processing?.status === 'queued' && !preparingByEsr[id];
+          const cap = isQueued ? 30 : 94;
+          const step = isQueued ? 5 : 10;
+          const current = next[id] ?? 10;
+          if (current < cap) {
+            next[id] = Math.min(cap, current + step);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, 600);
+
+    return () => window.clearInterval(timer);
+  }, [casesByEsr, preparingByEsr]);
+
+  // Brief 100% completion celebration when an ESR transitions out of background queued/processing
+  useEffect(() => {
+    for (const [id, c] of Object.entries(casesByEsr)) {
+      const wasActive = id in progressByEsr && !completingByEsr[id];
+      const stillRunning = c.processing?.status === 'queued' || c.processing?.status === 'processing' || preparingByEsr[id];
+      if (wasActive && !stillRunning && c.processing?.status === 'completed') {
+        setProgressByEsr(prev => ({ ...prev, [id]: 100 }));
+        setCompletingByEsr(prev => ({ ...prev, [id]: true }));
+        window.setTimeout(() => {
+          setCompletingByEsr(prev => {
+            const next = { ...prev };
+            delete next[id];
+            return next;
+          });
+          setProgressByEsr(prev => {
+            const next = { ...prev };
+            delete next[id];
+            return next;
+          });
+        }, 380);
+      }
+    }
+  }, [casesByEsr, preparingByEsr, progressByEsr, completingByEsr]);
+
+  const handlePrepareNow = async (esrId: string, force = false) => {
+    if (inFlightEsrs.current.has(esrId)) return;
+    inFlightEsrs.current.add(esrId);
+    setPreparingByEsr(prev => ({ ...prev, [esrId]: true }));
+    setProgressByEsr(prev => ({ ...prev, [esrId]: 15 }));
+    setPrepareErrorsByEsr(prev => {
+      const next = { ...prev };
+      delete next[esrId];
+      return next;
+    });
     try {
-      await prepareTriageDossier(esrId, true);
+      const result = await prepareTriageDossier(esrId, force);
+      if (!result.ok && result.message) {
+        setPrepareErrorsByEsr(prev => ({ ...prev, [esrId]: result.message }));
+      } else if (result.ok) {
+        setProgressByEsr(prev => ({ ...prev, [esrId]: 100 }));
+        setCompletingByEsr(prev => ({ ...prev, [esrId]: true }));
+        window.setTimeout(() => {
+          setCompletingByEsr(prev => {
+            const next = { ...prev };
+            delete next[esrId];
+            return next;
+          });
+          setProgressByEsr(prev => {
+            const next = { ...prev };
+            delete next[esrId];
+            return next;
+          });
+        }, 380);
+      }
     } finally {
-      setPreparing(false);
+      inFlightEsrs.current.delete(esrId);
+      setPreparingByEsr(prev => {
+        const next = { ...prev };
+        delete next[esrId];
+        return next;
+      });
     }
   };
 
@@ -1026,16 +1210,11 @@ export function TriagePage({
                       className="intake-queue-row"
                       aria-pressed={activeCase?.esrId === c.esrId}
                       onClick={() => {
-                        if (activeCase?.esrId === c.esrId) {
-                          setDeselected(true);
-                          onSelect('');
-                        } else {
-                          setDeselected(false);
-                          onSelect(c.esrId);
-                          if (queueOpen) {
-                            setQueueOpen(false);
-                            requestAnimationFrame(() => caseHeading.current?.focus());
-                          }
+                        setDeselected(false);
+                        onSelect(c.esrId);
+                        if (queueOpen) {
+                          setQueueOpen(false);
+                          requestAnimationFrame(() => caseHeading.current?.focus());
                         }
                       }}
                     >
@@ -1045,7 +1224,7 @@ export function TriagePage({
                       </span>
                       {c.distressAlerts.length > 0 ? (
                         <Status text="Urgent Alert" tone="red" />
-                      ) : c.processing.status === 'processing' || c.processing.status === 'queued' ? (
+                      ) : c.processing.status === 'processing' || c.processing.status === 'queued' || preparingByEsr[c.esrId] ? (
                         <Status text="Analyzing" tone="amber" />
                       ) : c.clarificationCount > 0 ? (
                         <Status text="Clarify" tone="amber" />
@@ -1072,32 +1251,51 @@ export function TriagePage({
         {/* Right Workspace: Clean 6-Section Clinical Planning Canvas */}
         {activeCase && activeEsr ? (
           <section className="intake-case-card triage-case-workspace queue-detail" key={activeCase.esrId} aria-labelledby="triage-case-title" tabIndex={0}>
-            {(isBackgroundProcessing || preparing) ? (
-              <div className="triage-preparing-canvas" role="status" aria-live="polite">
-                <div className="triage-processing-card">
-                  <Loader2 size={36} className="triage-spinner" />
-                  <h3><HeadingText>Preparing clinical evidence & examination plan</HeadingText>…</h3>
-                  <p>
-                    Running Medical NLP, ICD-10/CPT code crosswalk, transparent record search, and VA Rules checks for <strong>{activeCase.claimantName}</strong>.
-                  </p>
-                  <div className="triage-processing-steps">
-                    <span className="is-active">1. Medical NLP & Negation</span>
-                    <span className="is-active">2. Evidence Matching</span>
-                    <span className="is-active">3. AI Chronological Summary</span>
-                  </div>
-                  <div style={{ marginTop: '14px' }}>
-                    <button
-                      type="button"
-                      className="intake-primary"
-                      disabled={preparing}
-                      onClick={() => void handlePrepareNow(activeCase.esrId)}
-                    >
-                      {preparing ? 'Analyzing now…' : 'Complete analysis immediately'}
-                    </button>
+            {isAnalyzingActive ? (() => {
+              const pct = progressByEsr[activeCase.esrId] ?? (activeCase.processing?.status === 'queued' && !isPreparingActive ? 10 : 20);
+              const stageStatusLabel =
+                pct >= 100
+                  ? 'Analysis complete'
+                  : pct >= 70
+                    ? 'Generating AI chronological summary…'
+                    : pct >= 40
+                      ? 'Matching evidence & evaluating VA rules…'
+                      : activeCase.processing?.status === 'queued' && !isPreparingActive
+                        ? 'Queued for Stage 2 analysis…'
+                        : 'Extracting Medical NLP & negation…';
+              return (
+                <div className="triage-preparing-canvas" role="status" aria-live="polite">
+                  <div className="triage-processing-card">
+                    <Loader2 size={36} className="triage-spinner" />
+                    <h3><HeadingText>Preparing clinical evidence & examination plan</HeadingText>…</h3>
+                    <p>
+                      Running Medical NLP, ICD-10/CPT code crosswalk, transparent record search, and VA Rules checks for{' '}
+                      <strong>{activeCase.claimantName}</strong>.
+                    </p>
+                    <div className="triage-progress-wrap" aria-label={`Analysis progress ${pct}%`}>
+                      <div className="triage-progress-head">
+                        <span>{stageStatusLabel}</span>
+                        <span>{pct}%</span>
+                      </div>
+                      <div
+                        className="triage-progress-track"
+                        role="progressbar"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={pct}
+                      >
+                        <div className="triage-progress-fill" style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                    <div className="triage-processing-steps">
+                      <span className={pct >= 40 ? 'is-complete' : 'is-active'}>1. Medical NLP & Negation</span>
+                      <span className={pct >= 70 ? 'is-complete' : pct >= 40 ? 'is-active' : ''}>2. Evidence Matching</span>
+                      <span className={pct >= 100 ? 'is-complete' : pct >= 70 ? 'is-active' : ''}>3. AI Chronological Summary</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ) : (
+              );
+            })() : (
               <>
 
             {activeCase.processing.status === 'failed' && (
@@ -1110,11 +1308,21 @@ export function TriagePage({
                 <button
                   type="button"
                   className="intake-secondary"
-                  disabled={preparing}
-                  onClick={() => void handlePrepareNow(activeCase.esrId)}
+                  disabled={isPreparingActive}
+                  onClick={() => void handlePrepareNow(activeCase.esrId, false)}
                 >
                   Retry analysis
                 </button>
+              </div>
+            )}
+
+            {activePrepareError && activeCase.processing.status !== 'failed' && (
+              <div className="triage-stale-banner" role="alert">
+                <AlertTriangle size={16} />
+                <div>
+                  <strong><HeadingText>Analysis refresh notice</HeadingText></strong>
+                  <span>{activePrepareError}</span>
+                </div>
               </div>
             )}
 
@@ -1154,8 +1362,8 @@ export function TriagePage({
                 <button
                   type="button"
                   className="intake-secondary"
-                  disabled={preparing}
-                  onClick={() => void handlePrepareNow(activeCase.esrId)}
+                  disabled={isPreparingActive}
+                  onClick={() => void handlePrepareNow(activeCase.esrId, true)}
                   title="Re-run Medical NLP, code crosswalk, and AI chronological summary"
                 >
                   <RefreshCw size={14} /> Refresh analysis
@@ -1230,7 +1438,11 @@ export function TriagePage({
                   </button>
                 </div>
               </div>
-              <p className="triage-summary-prose">{activeCase.caseOverview}</p>
+              <ExpandableSummary
+                key={`${activeCase.esrId}-overview`}
+                text={activeCase.caseOverview || ''}
+                className="triage-summary-prose"
+              />
 
               {showCaseEvidence && (
                 <div className="triage-evidence-panel">
@@ -1279,7 +1491,11 @@ export function TriagePage({
                       documents={activeDocs}
                       isBvaRemand={Boolean(activeCase.programFlags?.isBvaRemand)}
                       onOpenCitation={setSourceDrawer}
-                      onApproved={(esrId, title, entityId) => setApprovedBanner({ esrId, title, entityId })}
+                      onApproved={(esrId, title, entityId) => {
+                        if (triageMountedRef.current && activeEsrIdRef.current === esrId) {
+                          setApprovedBanner({ esrId, title, entityId });
+                        }
+                      }}
                       onScheduling={onScheduling}
                     />
                   );

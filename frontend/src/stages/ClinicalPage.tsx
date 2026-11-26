@@ -930,7 +930,7 @@ export function ClinicalPage(props: StageProps) {
   ] as const;
 
   return (
-    <section className="intake-page">
+    <section className="intake-page queue-workbench">
       <StageHeading
         stage="Clinical Evaluation"
         description="Review Stage 1–3 context, complete or upload DBQs, validate findings, and approve the Medical Review for Internal QA."
@@ -1005,13 +1005,8 @@ export function ClinicalPage(props: StageProps) {
                       className="intake-queue-row"
                       aria-pressed={activeCase?.esrId === c.esrId}
                       onClick={() => {
-                        if (activeCase?.esrId === c.esrId) {
-                          setDeselected(true);
-                          setSelectedEsrId('');
-                        } else {
-                          setDeselected(false);
-                          setSelectedEsrId(c.esrId);
-                        }
+                        setDeselected(false);
+                        setSelectedEsrId(c.esrId);
                       }}
                     >
                       <span className="intake-queue-row-main">
@@ -1047,7 +1042,12 @@ export function ClinicalPage(props: StageProps) {
         </aside>
 
         {activeCase ? (
-          <section className="intake-case-card triage-case-workspace">
+          <section
+            className="intake-case-card triage-case-workspace queue-detail"
+            key={activeCase.esrId}
+            aria-label={`Clinical evaluation for ${activeCase.claimantName}`}
+            tabIndex={0}
+          >
             <header className="triage-case-header">
               <div className="triage-claimant-block">
                 <span className="intake-avatar">{activeCase.initials}</span>

@@ -220,8 +220,14 @@ def apply_command(
         raise HTTPException(422, outcome["error"])
     next_state = outcome["state"]
     if body.action == "validateIntake" and body.args and isinstance(body.args[0], str):
+        from app.services.triage_store import compute_current_esr_digest
         esr_id = body.args[0]
-        enqueue_triage_job(db, esr_id, force=True)
+        enqueue_triage_job(
+            db,
+            esr_id,
+            force=True,
+            evidence_digest=compute_current_esr_digest(next_state, esr_id),
+        )
     save_next_state(db, body.revision, next_state)
     db.add(IdempotencyRecord(key=str(idempotency_key), response_json={
         "fingerprint": fingerprint, "value": outcome["value"],
@@ -273,33 +279,101 @@ def prepare_triage_dossier(
         raise HTTPException(503, "This workflow action is unavailable.")
     if user.role not in {"case-builder", "intake", "clinician", "admin"}:
         raise HTTPException(403, "This role cannot prepare triage dossiers.")
-    from app.services.intake_store import timestamp, touch
+    from copy import deepcopy
+    from app.services.intake_store import timestamp
+    from app.services.triage_store import (
+        compute_current_esr_digest,
+        esr_triage_lock,
+        finalize_triage_job,
+        merge_stage2_result_into_state,
+        persist_stage2_normalized,
+        register_or_reuse_triage_job,
+    )
 
-    for _ in range(3):
-        state = get_state(db)
-        esr = state.get("esrsById", {}).get(esr_id)
+    with esr_triage_lock(esr_id):
+        initial_state = get_state(db)
+        esr = (initial_state.get("esrsById") or {}).get(esr_id)
         if not esr or esr.get("intakeStatus") not in {"ready-for-triage", "completed"}:
             raise HTTPException(404, "Validated ESR not found in Medical Triage.")
-        revision = state["revision"]
-        run_triage_pipeline_for_state(state, esr_id, allow_llm=(settings.intake_provider == "azure-openai"), force=force)
-        dossier = (state.get("triageDossiersByEsrId") or {}).get(esr_id) or {}
-        now = timestamp()
-        touch(esr, now, triageProcessing={
-            "status": "completed",
-            "completedAt": now,
-            "sourceDigest": dossier.get("sourceDigest", ""),
-            "factCount": dossier.get("factCount", 0),
-            "aiProvider": dossier.get("aiProvider", "local"),
-            "ruleVersion": dossier.get("ruleVersion", ""),
-        })
+
+        expected_digest = compute_current_esr_digest(initial_state, esr_id)
+        existing_proc = esr.get("triageProcessing") or {}
+        existing_dossier = (initial_state.get("triageDossiersByEsrId") or {}).get(esr_id)
+        if (
+            not force
+            and existing_proc.get("status") == "completed"
+            and existing_dossier
+            and existing_dossier.get("sourceDigest") == expected_digest
+            and (settings.intake_provider != "azure-openai" or existing_dossier.get("aiAttempted"))
+        ):
+            return {"ok": True, "esrId": esr_id, "state": _with_all_views(initial_state)}
+
+        triage_job, _ = register_or_reuse_triage_job(
+            db, esr_id, expected_digest, worker_lease=f"http:{user.user_id}"
+        )
+        triage_job_id = triage_job.job_id
+        db.commit()
+
+        # Run slow NLP + LLM pipeline ONCE outside snapshot commit retry loop
+        computed_state = deepcopy(initial_state)
         try:
-            save_next_state(db, revision, state)
+            dossier = run_triage_pipeline_for_state(
+                computed_state,
+                esr_id,
+                allow_llm=(settings.intake_provider == "azure-openai"),
+                force=force,
+            )
+        except Exception as exc:
+            finalize_triage_job(db, triage_job_id, "failed", last_error=str(exc))
             db.commit()
-            return {"ok": True, "esrId": esr_id, "state": _with_all_views(state)}
-        except HTTPException as exc:
-            if exc.status_code != 409:
-                raise
-            db.rollback()
+            raise
+
+        # Atomic merge onto latest snapshot state (checks evidence version; retries only the save, never the LLM)
+        for _ in range(5):
+            db.expire_all()
+            latest_state = get_state(db)
+            latest_esr = (latest_state.get("esrsById") or {}).get(esr_id)
+            if not latest_esr:
+                finalize_triage_job(db, triage_job_id, "completed")
+                db.commit()
+                raise HTTPException(404, "Validated ESR not found in Medical Triage.")
+
+            now = timestamp()
+            current_digest = compute_current_esr_digest(latest_state, esr_id)
+            evidence_changed = bool(expected_digest and current_digest and current_digest != expected_digest)
+            revision = latest_state["revision"]
+            merge_stage2_result_into_state(
+                latest_state,
+                esr_id,
+                computed_state,
+                dossier,
+                now,
+                mark_stale=evidence_changed,
+            )
+            if dossier:
+                esr_facts = [
+                    row for row in (computed_state.get("clinicalFactsById") or {}).values()
+                    if row.get("esrId") == esr_id
+                ]
+                persist_stage2_normalized(
+                    db,
+                    esr_id,
+                    dossier,
+                    esr_facts,
+                    document_count=len(latest_esr.get("evidenceDocumentIds") or []),
+                    is_stale=evidence_changed,
+                )
+            finalize_triage_job(db, triage_job_id, "stale" if evidence_changed else "completed")
+            if evidence_changed:
+                enqueue_triage_job(db, esr_id, force=True, evidence_digest=current_digest)
+            try:
+                save_next_state(db, revision, latest_state)
+                db.commit()
+                return {"ok": True, "esrId": esr_id, "state": _with_all_views(latest_state)}
+            except HTTPException as exc:
+                if exc.status_code != 409:
+                    raise
+                db.rollback()
     raise HTTPException(409, "The workspace changed while preparing triage. Please retry.")
 
 
