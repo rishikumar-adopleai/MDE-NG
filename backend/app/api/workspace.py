@@ -16,6 +16,7 @@ from app.services.intake_view import with_intake_views
 from app.services.scheduling import (
     SCHEDULING_COMMANDS,
     apply_scheduling_command,
+    find_coordinated_scheduling_matches,
     find_scheduling_matches,
     with_scheduling_view,
 )
@@ -31,7 +32,7 @@ COMMAND_ROLES = {
     **dict.fromkeys(("reviewIntakeException", "recordIntakeReceipt",
                      "completeDocumentProcessing", "validateIntake", "updateDocumentCategory"), "intake"),
     **dict.fromkeys(TRIAGE_COMMANDS, "case-builder"),
-    **dict.fromkeys(("recordOutreach", "holdAppointment", "confirmAppointment",
+    **dict.fromkeys(("recordOutreach", "holdAppointment", "holdCoordinatedAppointments", "confirmAppointment",
                      "setSchedulingDistanceLimit", "recordAppointmentLogistics",
                      "verifyVeteranLocation", "rescheduleAppointment", "cancelAppointment"), "scheduler"),
     **dict.fromkeys(("saveDBQDraft", "validateDBQ", "reviewDiagnostic", "recordDiagnosticResult",
@@ -62,6 +63,11 @@ class SchedulingMatchRequest(BaseModel):
     requirementIds: list[str] = Field(min_length=1, max_length=12)
     facilityId: str | None = Field(default=None, max_length=64)
     examinerId: str | None = Field(default=None, max_length=64)
+
+
+class CoordinatedMatchRequest(BaseModel):
+    esrId: str = Field(min_length=1, max_length=64)
+    requirementIds: list[str] | None = None
 
 
 def workspace_reader(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
@@ -193,6 +199,22 @@ def match_scheduling_options(
     state = get_state(db, backfill_requests=False, load_practice=False)
     return find_scheduling_matches(
         db, state, body.requirementIds, facility_id=body.facilityId, examiner_id=body.examinerId
+    )
+
+
+@router.post("/scheduling/match-coordinated")
+def match_coordinated_scheduling(
+    body: CoordinatedMatchRequest,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(workspace_reader),
+) -> dict:
+    if settings.app_env != "dev":
+        raise HTTPException(503, "This workflow action is unavailable.")
+    if user.role not in {"scheduler", "admin", "case-builder"}:
+        raise HTTPException(403, "This role cannot search scheduling matches.")
+    state = get_state(db, backfill_requests=False, load_practice=False)
+    return find_coordinated_scheduling_matches(
+        db, state, body.esrId, requirement_ids=body.requirementIds
     )
 
 

@@ -3,6 +3,7 @@ import { AlertCircle, Hospital, LogOut, Menu, ShieldCheck, UserRound, X } from '
 import { logout } from './data/repositories/workspaceApi';
 import { navItems, type StageKey } from './stages/model';
 import { stageHref } from './workspaceRoutes';
+import { HeadingText } from './HeadingText';
 
 const mobileViewport = '(max-width: 900px)';
 
@@ -126,7 +127,7 @@ export function WorkspaceTopbar({ openNavigation, navigationOpen, canSignOut, ex
   return <header className="workflow-topbar">
     <button type="button" className="workflow-icon-button workflow-mobile-menu" aria-label="Open navigation"
       aria-haspopup="dialog" aria-controls="workflow-drawer" aria-expanded={navigationOpen} onClick={openNavigation}><Menu size={20} /></button>
-    <span className="workflow-topbar-title">EXAMINATON WORKSPACE</span>
+    <span className="workflow-topbar-title"><HeadingText>Examination workspace</HeadingText></span>
     {children}
     <div className="workflow-tools">
       <button type="button" className="workflow-exceptions" aria-label={`Exceptions (${exceptions})`}

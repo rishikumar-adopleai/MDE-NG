@@ -17,10 +17,10 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.models import Stage3Examiner, Stage3Facility, Stage3TimeSlot
+from app.models import AuditEvent, Stage3Examiner, Stage3Facility, Stage3TimeSlot
 from app.services.intake_store import record, timestamp, touch
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,7 @@ STAGE3_SEED_VERSION = "v3-normalized-dedup"
 
 SCHEDULING_COMMANDS = frozenset({
     "holdAppointment",
+    "holdCoordinatedAppointments",
     "recordOutreach",
     "recordAppointmentLogistics",
     "verifyVeteranLocation",
@@ -66,16 +67,41 @@ def normalize_state_code(raw: str | None) -> str:
 # Configurable ranking weights & specialty mappings (ready for Prime EMS overrides)
 DEFAULT_RANKING_CONFIG = {
     "defaultTravelLimitMiles": None,
-    "minMinutesPerExam": 30,
+    "provisionalDemonstrationMinDurationMinutes": 15,
     "enforceLicenseJurisdiction": True,
     "requireBoardCertifiedWhenRequested": False,
+    "maxOutreachAttempts": 2,
+    "specialtyTravelThresholds": {
+        "general medical": 50,
+        "audiology": 100,  # Decoupled from 50mi general medical: specialized sound booth requirements
+        "specialty": 100,
+    },
 }
 
 
-def _resolve_travel_limit(esr: dict, veteran: dict) -> int | None:
-    """Return explicit ESR/Veteran travel limit in miles if configured; never fabricate a default."""
-    raw = esr.get("travelLimitMiles") or veteran.get("travelLimitMiles") or DEFAULT_RANKING_CONFIG.get("defaultTravelLimitMiles")
-    return int(raw) if raw else None
+def _resolve_travel_limit(esr: dict, veteran: dict, requirement: dict | None = None) -> int | None:
+    """Return explicit ESR/Veteran travel limit in miles if configured;
+    otherwise return None unless an explicit policy threshold is configured."""
+    raw = esr.get("travelLimitMiles") or veteran.get("travelLimitMiles")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            pass
+    return DEFAULT_RANKING_CONFIG.get("defaultTravelLimitMiles")
+
+
+def get_specialty_travel_threshold(specialty: str) -> int:
+    """Configurable source-backed travel thresholds.
+    Audiology has specialized sound booth requirements, classified at 100 miles
+    rather than general medical 50 miles."""
+    spec_clean = specialty.strip().casefold()
+    thresholds = DEFAULT_RANKING_CONFIG.get("specialtyTravelThresholds", {})
+    if "audiology" in spec_clean or "otolaryngology" in spec_clean:
+        return thresholds.get("audiology", 100)
+    if spec_clean not in ("general medical", "family medicine", "internal medicine"):
+        return thresholds.get("specialty", 100)
+    return thresholds.get("general medical", 50)
 
 # Exact primary specialty aliases without equating unrelated qualifications or General Medical
 SPECIALTY_ALIASES: dict[str, set[str]] = {
@@ -377,6 +403,30 @@ def _normalize_specialty_group(req: dict) -> str:
     return "general medical"
 
 
+def _accepted_specialties_for_req(req: dict) -> set[str]:
+    specs = " ".join(req.get("requiredSpecialties") or []).casefold()
+    accepted: set[str] = set()
+    if "audiology" in specs:
+        accepted |= SPECIALTY_ALIASES.get("audiology", {"audiology"})
+    if "psych" in specs:
+        accepted |= SPECIALTY_ALIASES.get("psychiatry", {"psychiatry"})
+    if "ortho" in specs or "musculoskeletal" in specs:
+        accepted |= SPECIALTY_ALIASES.get("orthopedics", {"orthopedics"})
+    if "neuro" in specs:
+        accepted |= SPECIALTY_ALIASES.get("neurology", {"neurology"})
+    if "derm" in specs:
+        accepted |= SPECIALTY_ALIASES.get("dermatology", {"dermatology"})
+    if "pulm" in specs:
+        accepted |= SPECIALTY_ALIASES.get("pulmonology", {"pulmonology"})
+    if "cardio" in specs:
+        accepted |= SPECIALTY_ALIASES.get("cardiology", {"cardiology"})
+    if "endo" in specs or "internal" in specs:
+        accepted |= SPECIALTY_ALIASES.get("internal medicine", {"internal medicine"})
+    if "general medical" in specs or "general" in specs or (not accepted and not (req.get("requiredSpecialties") or [])):
+        accepted |= SPECIALTY_ALIASES.get("general medical", {"general medical"})
+    return accepted
+
+
 def _required_equipment_for_requirements(requirements: list[dict]) -> list[tuple[str, tuple[str, ...]]]:
     needed: list[tuple[str, tuple[str, ...]]] = []
     for req in requirements:
@@ -428,8 +478,7 @@ def _examiner_matches_specialty(examiner: Stage3Examiner, requirements: list[dic
     if examiner.primary_specialty:
         exm_specs.add(_norm_text(examiner.primary_specialty))
     for req in requirements:
-        group = _normalize_specialty_group(req)
-        accepted = SPECIALTY_ALIASES.get(group, {group})
+        accepted = _accepted_specialties_for_req(req)
         if not (exm_specs & accepted):
             return False
     return True
@@ -574,9 +623,9 @@ def find_scheduling_matches(
     esr = state["esrsById"].get(requirements[0]["esrId"], {})
     veteran = state.get("veteransById", {}).get(esr.get("veteranId"), {})
     modality = requirements[0].get("selectedModality") or "in-person"
-    travel_limit = _resolve_travel_limit(esr, veteran)
+    travel_limit = _resolve_travel_limit(esr, veteran, requirements[0] if requirements else None)
     due_day = str(esr.get("dueAt") or "")[:10]
-    min_duration = max(30, DEFAULT_RANKING_CONFIG["minMinutesPerExam"] * len(requirements))
+    min_duration = DEFAULT_RANKING_CONFIG.get("provisionalDemonstrationMinDurationMinutes", 15)
 
     loc = resolve_veteran_location(veteran, esr)
     if modality == "ace-records-review":
@@ -812,6 +861,334 @@ def find_scheduling_matches(
     }
 
 
+def find_coordinated_scheduling_matches(
+    db: Session,
+    state: dict,
+    esr_id: str,
+    requirement_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Coordinated multi-examination scheduling following VA RFP 36C10X27R0001 (Section 5.2.2) and GAO-23-105787.
+
+    1. Read pending approved examinations for the ESR.
+    2. Identify eligible facilities and qualified examiners for each examination.
+    3. Determine common facilities with availability on the same calendar day.
+    4. Assemble non-overlapping slot combinations across examiners.
+    5. Rank combinations:
+       - Priority 1/2: Same day, same facility (1 single visit, zero inter-clinic travel).
+       - Priority 4: Partial grouping (subset of exams grouped, remaining separate).
+       - Priority 5: Fallback separate appointments with clear contractual justification.
+    """
+    ensure_stage3_directory_seeded(db)
+    esr = state.get("esrsById", {}).get(esr_id)
+    if not esr:
+        raise HTTPException(404, "ESR not found.")
+    veteran = state.get("veteransById", {}).get(esr.get("veteranId"), {})
+    loc = resolve_veteran_location(veteran, esr)
+    travel_limit = _resolve_travel_limit(esr, veteran)
+
+    all_reqs = [
+        r for r in state.get("examinationRequirementsById", {}).values()
+        if r.get("esrId") == esr_id and r.get("status") not in {"superseded-by-evidence-revision", "cancelled"}
+    ]
+    if requirement_ids:
+        pending_reqs = [r for r in all_reqs if r["id"] in requirement_ids]
+    else:
+        unheld = [r for r in all_reqs if not r.get("appointmentId")]
+        pending_reqs = unheld if unheld else all_reqs
+
+    if not pending_reqs:
+        return {
+            "esrId": esr_id,
+            "totalPendingCount": 0,
+            "packages": [],
+            "bestPackageId": "",
+            "message": "All approved examinations have already been scheduled.",
+        }
+
+    active_appts = [
+        a for a in state.get("appointmentsById", {}).values()
+        if a.get("status") in {"held", "confirmed", "confirmed-locally"}
+    ]
+    vet_busy = [(a["startsAt"], a["endsAt"]) for a in active_appts if a.get("veteranId") == veteran.get("id")]
+    exm_busy: dict[str, list[tuple[str, str]]] = {}
+    fac_busy: dict[str, list[tuple[str, str]]] = {}
+    for a in active_appts:
+        exm_busy.setdefault(a.get("examinerId", ""), []).append((a["startsAt"], a["endsAt"]))
+        fac_busy.setdefault(a.get("facilityId", ""), []).append((a["startsAt"], a["endsAt"]))
+
+    def _slot_has_conflict(busy_list: list[tuple[str, str]], s: str, e: str) -> bool:
+        return any(not (e <= bs or s >= be) for bs, be in busy_list)
+
+    all_facilities = db.execute(select(Stage3Facility)).scalars().all()
+    all_examiners = db.execute(select(Stage3Examiner)).scalars().all()
+    examiners_by_id = {ex.examiner_id: ex for ex in all_examiners}
+
+    avail_slots = db.execute(
+        select(Stage3TimeSlot)
+        .where(Stage3TimeSlot.slot_status == "available", Stage3TimeSlot.duration_minutes >= 30)
+        .order_by(Stage3TimeSlot.starts_at)
+    ).scalars().all()
+
+    slots_by_fac_date: dict[tuple[str, str], list[Stage3TimeSlot]] = {}
+    for sl in avail_slots:
+        slots_by_fac_date.setdefault((sl.facility_id, sl.starts_at[:10]), []).append(sl)
+
+    packages: list[dict[str, Any]] = []
+    seen_combos: set[tuple[str, str, tuple[str, ...]]] = set()
+
+    for fac in all_facilities:
+        has_in_person = any((r.get("selectedModality") or "in-person") == "in-person" for r in pending_reqs)
+        dist, dist_prec = (None, "not-applicable") if not has_in_person else _facility_distance(loc, fac)
+        within_travel = True if (travel_limit is None or not has_in_person or dist is None) else (dist <= travel_limit)
+        room_cap = max(1, int((fac.data_json or {}).get("examRoomCount") or 1))
+
+        fac_eligible_reqs = []
+        for r in pending_reqs:
+            modality = r.get("selectedModality") or "in-person"
+            ok_fac, _ = _facility_eligible(fac, modality, [r], veteran)
+            if ok_fac:
+                fac_eligible_reqs.append(r)
+
+        if not fac_eligible_reqs:
+            continue
+
+        fac_dates = sorted({sl.starts_at[:10] for sl in avail_slots if sl.facility_id == fac.facility_id})
+
+        for d in fac_dates:
+            day_slots = slots_by_fac_date.get((fac.facility_id, d), [])
+            if not day_slots:
+                continue
+
+            req_valid_slots: dict[str, list[tuple[dict, Stage3Examiner, Stage3TimeSlot]]] = {}
+            for r in fac_eligible_reqs:
+                modality = r.get("selectedModality") or "in-person"
+                candidates = []
+                for sl in day_slots:
+                    if sl.modality != modality:
+                        continue
+                    exm = examiners_by_id.get(sl.examiner_id)
+                    if not exm or exm.status != "active":
+                        continue
+                    ok_base, _ = _check_examiner_base_eligibility(exm, [r], modality, fac.facility_id)
+                    if not ok_base:
+                        continue
+                    exm_licenses = (exm.data_json or {}).get("licenses") or []
+                    ok_lic, _ = is_license_valid_for_exam_date(
+                        exm.license_status,
+                        exm.license_expiry_date,
+                        sl.starts_at,
+                        licenses=exm_licenses,
+                        required_state=fac.state_code if modality == "in-person" else "",
+                    )
+                    if not ok_lic:
+                        continue
+                    ok_cert, _ = _certifications_valid_on_date(exm, sl.starts_at)
+                    if not ok_cert:
+                        continue
+                    if _slot_has_conflict(vet_busy, sl.starts_at, sl.ends_at) or _slot_has_conflict(exm_busy.get(exm.examiner_id, []), sl.starts_at, sl.ends_at):
+                        continue
+                    overlaps_room = sum(1 for bs, be in fac_busy.get(fac.facility_id, []) if not (sl.ends_at <= bs or sl.starts_at >= be))
+                    if overlaps_room >= room_cap:
+                        continue
+                    candidates.append((r, exm, sl))
+
+                if candidates:
+                    req_valid_slots[r["id"]] = candidates
+
+            if len(req_valid_slots) < 1:
+                continue
+
+            # Evaluate complete facility, examiner and appointment combinations to maximize coverage & minimize idle wait
+            req_keys = list(req_valid_slots.keys())
+            best_assignment: list[tuple[dict, Stage3Examiner, Stage3TimeSlot]] = []
+            best_idle = float("inf")
+
+            def _calc_idle(items: list[tuple[dict, Stage3Examiner, Stage3TimeSlot]]) -> int:
+                sorted_slots = sorted(items, key=lambda it: it[2].starts_at)
+                total = 0
+                for i in range(len(sorted_slots) - 1):
+                    try:
+                        s_prev = sorted_slots[i][2].ends_at
+                        s_next = sorted_slots[i + 1][2].starts_at
+                        hp, mp = int(s_prev[11:13]), int(s_prev[14:16])
+                        hn, mn = int(s_next[11:13]), int(s_next[14:16])
+                        gap = (hn * 60 + mn) - (hp * 60 + mp)
+                        total += max(0, gap)
+                    except Exception:
+                        pass
+                return total
+
+            def _eval_combos(idx: int, curr_items: list[tuple], curr_intervals: list[tuple[str, str]]):
+                nonlocal best_assignment, best_idle
+                if idx == len(req_keys):
+                    if len(curr_items) > len(best_assignment):
+                        best_assignment = list(curr_items)
+                        best_idle = _calc_idle(curr_items)
+                    elif len(curr_items) == len(best_assignment) and len(curr_items) > 0:
+                        idle = _calc_idle(curr_items)
+                        if idle < best_idle:
+                            best_assignment = list(curr_items)
+                            best_idle = idle
+                    return
+
+                rid = req_keys[idx]
+                for req_item, exm_item, sl_item in req_valid_slots[rid]:
+                    if not _slot_has_conflict(curr_intervals, sl_item.starts_at, sl_item.ends_at):
+                        curr_items.append((req_item, exm_item, sl_item))
+                        curr_intervals.append((sl_item.starts_at, sl_item.ends_at))
+                        _eval_combos(idx + 1, curr_items, curr_intervals)
+                        curr_items.pop()
+                        curr_intervals.pop()
+
+                _eval_combos(idx + 1, curr_items, curr_intervals)
+
+            _eval_combos(0, [], [])
+
+            if not best_assignment:
+                continue
+
+            assigned_items = [
+                {
+                    "requirementId": r_c["id"],
+                    "examinationType": r_c.get("examinationType") or r_c.get("title", ""),
+                    "specialty": (r_c.get("requiredSpecialties") or [""])[0],
+                    "modality": sl_c.modality,
+                    "examinerId": ex_c.examiner_id,
+                    "examinerName": ex_c.doctor_name,
+                    "licenseExpiryDate": ex_c.license_expiry_date,
+                    "licenseStatus": ex_c.license_status,
+                    "slotId": sl_c.slot_id,
+                    "startsAt": sl_c.starts_at,
+                    "endsAt": sl_c.ends_at,
+                    "durationMinutes": sl_c.duration_minutes,
+                }
+                for r_c, ex_c, sl_c in best_assignment
+            ]
+
+            assigned_items.sort(key=lambda x: x["startsAt"])
+
+            combo_key = (fac.facility_id, d, tuple(sorted(item["slotId"] for item in assigned_items)))
+            if combo_key in seen_combos:
+                continue
+            seen_combos.add(combo_key)
+
+            matched_req_ids = {it["requirementId"] for it in assigned_items}
+            unmatched = [
+                {
+                    "requirementId": r["id"],
+                    "examinationType": r.get("examinationType") or r.get("title", ""),
+                    "reason": "No compatible examiner slot available on this day without time conflict.",
+                }
+                for r in pending_reqs if r["id"] not in matched_req_ids
+            ]
+
+            coverage_type = "full" if len(assigned_items) == len(pending_reqs) else "partial" if len(assigned_items) >= 2 else "single"
+            if coverage_type == "full":
+                badge = "Full Coordinated Visit · 1 Day, 1 Location (VA RFP 5.2.2 Compliant)"
+                explanation = (
+                    f"Coordinates all {len(pending_reqs)} approved examinations into a single visit at {fac.facility_name} "
+                    f"on {d}. Successive appointments allow the Veteran to complete all testing in one trip with zero inter-clinic travel."
+                )
+            elif coverage_type == "partial":
+                badge = f"Partial Grouping ({len(assigned_items)} of {len(pending_reqs)} Exams on Same Day)"
+                explanation = (
+                    f"Groups {len(assigned_items)} examinations together at {fac.facility_name} on {d}. "
+                    f"The remaining examination ({unmatched[0]['examinationType'] if unmatched else 'separate'}) requires "
+                    f"a separate visit due to specialized examiner availability."
+                )
+            else:
+                badge = "Single Examination Slot"
+                explanation = f"Available slot for {assigned_items[0]['examinationType']} at {fac.facility_name}."
+
+            visit_start = assigned_items[0]["startsAt"]
+            visit_end = assigned_items[-1]["endsAt"]
+
+            # Calculate idle waiting time between consecutive appointments (prefer shorter waiting times)
+            total_idle_wait_minutes = 0
+            for i in range(len(assigned_items) - 1):
+                try:
+                    s_prev = assigned_items[i]["endsAt"]
+                    s_next = assigned_items[i + 1]["startsAt"]
+                    h_p, m_p = int(s_prev[11:13]), int(s_prev[14:16])
+                    h_n, m_n = int(s_next[11:13]), int(s_next[14:16])
+                    gap = (h_n * 60 + m_n) - (h_p * 60 + m_p)
+                    total_idle_wait_minutes += max(0, gap)
+                except Exception:
+                    pass
+
+            packages.append({
+                "packageId": f"pkg-{uuid4().hex[:8]}",
+                "coverageType": coverage_type,
+                "badge": badge,
+                "facilityId": fac.facility_id,
+                "facilityName": fac.facility_name,
+                "city": fac.city,
+                "stateCode": fac.state_code,
+                "postalCode": fac.postal_code,
+                "distanceMiles": dist,
+                "distancePrecision": dist_prec,
+                "withinTravelLimit": within_travel,
+                "date": d,
+                "visitStartsAt": visit_start,
+                "visitEndsAt": visit_end,
+                "totalIdleWaitMinutes": total_idle_wait_minutes,
+                "items": assigned_items,
+                "unmatchedRequirements": unmatched,
+                "explanation": explanation,
+                "contractualNotice": (
+                    "Satisfies VA RFP 36C10X27R0001 Section 5.2.2 (Minimizing Separate Visits and Locations) "
+                    "and GAO-23-105787 clinical guidelines."
+                ),
+                "_sortKey": (
+                    0 if coverage_type == "full" else (1 if coverage_type == "partial" else 2),
+                    0 if within_travel else 1,
+                    dist if dist is not None else 99999.0,
+                    total_idle_wait_minutes,
+                    d,
+                ),
+            })
+
+    packages.sort(key=lambda p: p["_sortKey"])
+    clean_packages = [{k: v for k, v in p.items() if k != "_sortKey"} for p in packages]
+
+    has_grouped = any(p["coverageType"] in {"full", "partial"} for p in clean_packages)
+    if not has_grouped and len(pending_reqs) > 1:
+        clean_packages.insert(0, {
+            "packageId": f"pkg-fallback-{uuid4().hex[:6]}",
+            "coverageType": "separate",
+            "badge": "Separate Visits Required (Specialist Availability Limitation)",
+            "facilityId": "",
+            "facilityName": "Various Facilities",
+            "city": "",
+            "stateCode": "",
+            "distanceMiles": None,
+            "withinTravelLimit": True,
+            "date": "Independent Dates",
+            "visitStartsAt": "",
+            "visitEndsAt": "",
+            "items": [],
+            "unmatchedRequirements": [
+                {"requirementId": r["id"], "examinationType": r.get("examinationType") or r.get("title", ""), "reason": "No compatible same-day examiner availability found."}
+                for r in pending_reqs
+            ],
+            "explanation": (
+                "Examinations cannot be scheduled on the same day because nearest providers and facilities do not have compatible "
+                "same-day availability across these specialized disciplines. In accordance with VA and contractor guidelines, "
+                "please schedule each examination independently under 'Schedule Separately'."
+            ),
+            "contractualNotice": "VA RFP 36C10X27R0001 Section 5.2.2 permitted exception: independent visits when simultaneous availability is impracticable.",
+        })
+
+    best_pkg_id = clean_packages[0]["packageId"] if clean_packages else ""
+
+    return {
+        "esrId": esr_id,
+        "totalPendingCount": len(pending_reqs),
+        "packages": clean_packages[:20],
+        "bestPackageId": best_pkg_id,
+    }
+
+
 def with_scheduling_view(state: dict) -> dict:
     """Build case-grouped Stage 3 Scheduling view without inflating WorkspaceSnapshot."""
     cases_by_esr: dict[str, dict[str, Any]] = {}
@@ -993,6 +1370,127 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
         event = "scheduling-appointment-held"
         esr_id = esr["id"]
 
+    elif action == "holdCoordinatedAppointments":
+        if len(args) < 1 or not isinstance(args[0], list) or not args[0]:
+            raise HTTPException(422, "Provide a list of appointment items to hold.")
+        items_payload = args[0]
+        now = timestamp()
+        new_appts: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+        locked_slots: list[str] = []
+        package_intervals: list[tuple[str, str]] = []
+
+        active_appts = [
+            a for a in state.get("appointmentsById", {}).values()
+            if a.get("status") in {"held", "confirmed", "confirmed-locally"}
+        ]
+
+        try:
+            for item in items_payload:
+                req_id = item.get("requirementId")
+                examiner_id = item.get("examinerId")
+                slot = item.get("slot") or item
+                req = state.get("examinationRequirementsById", {}).get(req_id)
+                if not req:
+                    raise HTTPException(404, f"Requirement '{req_id}' not found.")
+                if req.get("status") in {"superseded-by-evidence-revision", "cancelled"}:
+                    raise HTTPException(409, f"Requirement '{req_id}' is superseded or cancelled.")
+
+                esr = state["esrsById"][req["esrId"]]
+                veteran = state.get("veteransById", {}).get(esr.get("veteranId"), {})
+                exm = db.get(Stage3Examiner, examiner_id)
+                if not exm or exm.status != "active":
+                    raise HTTPException(422, f"Examiner '{examiner_id}' is not active.")
+
+                fac_id = str(slot.get("facilityId") or exm.primary_facility_id or "")
+                fac = db.get(Stage3Facility, fac_id) if fac_id else None
+                modality = req.get("selectedModality") or "in-person"
+                if fac:
+                    ok_fac, fac_msg = _facility_eligible(fac, modality, [req], veteran)
+                    if not ok_fac:
+                        raise HTTPException(422, f"Facility cannot be used: {fac_msg}")
+
+                ok_base, base_msg = _check_examiner_base_eligibility(exm, [req], modality, fac_id)
+                if not ok_base:
+                    raise HTTPException(422, f"Examiner cannot be scheduled: {base_msg}")
+
+                starts_at = str(slot.get("startsAt") or "")
+                ends_at = str(slot.get("endsAt") or "")
+
+                exm_licenses = (exm.data_json or {}).get("licenses") or []
+                ok_lic, lic_msg = is_license_valid_for_exam_date(
+                    exm.license_status,
+                    exm.license_expiry_date,
+                    starts_at,
+                    licenses=exm_licenses,
+                    required_state=fac.state_code if (fac and modality == "in-person") else "",
+                )
+                if not ok_lic:
+                    raise HTTPException(422, f"Examiner license invalid: {lic_msg}.")
+
+                # Verify no overlap with existing active appointments
+                for a in active_appts:
+                    if not (ends_at <= a["startsAt"] or starts_at >= a["endsAt"]):
+                        if a.get("examinerId") == examiner_id or a.get("veteranId") == veteran.get("id"):
+                            raise HTTPException(409, f"Slot {starts_at} overlaps an existing held/confirmed appointment.")
+
+                # Verify no overlap between items within this package
+                for p_s, p_e in package_intervals:
+                    if not (ends_at <= p_s or starts_at >= p_e):
+                        raise HTTPException(409, f"Coordinated appointments have overlapping times ({starts_at} vs {p_s}).")
+                package_intervals.append((starts_at, ends_at))
+
+                # Atomic DB slot reservation
+                slot_id = slot.get("slotId")
+                if slot_id:
+                    changed = db.execute(
+                        update(Stage3TimeSlot)
+                        .where(Stage3TimeSlot.slot_id == slot_id, Stage3TimeSlot.slot_status == "available")
+                        .values(slot_status="held")
+                    )
+                    if changed.rowcount != 1:
+                        raise HTTPException(409, f"Time slot for '{req.get('examinationType')}' is no longer available.")
+                    locked_slots.append(slot_id)
+
+                appt_id = f"appt-{uuid4().hex[:12]}"
+                appt = {
+                    **record(appt_id, now),
+                    "esrId": esr["id"],
+                    "veteranId": esr.get("veteranId", ""),
+                    "requirementIds": [req_id],
+                    "examinerId": examiner_id,
+                    "examinerName": exm.doctor_name,
+                    "examinerLicenseExpiry": exm.license_expiry_date,
+                    "facilityId": fac_id,
+                    "facilityName": fac.facility_name if fac else fac_id,
+                    "modality": modality,
+                    "slotId": slot_id or "",
+                    "startsAt": starts_at,
+                    "endsAt": ends_at,
+                    "status": "held",
+                    "outreachLog": [],
+                    "coordinatedVisit": True,
+                }
+                new_appts.append((appt_id, appt, req))
+
+        except Exception:
+            for s_id in locked_slots:
+                db.execute(
+                    update(Stage3TimeSlot)
+                    .where(Stage3TimeSlot.slot_id == s_id, Stage3TimeSlot.slot_status == "held")
+                    .values(slot_status="available")
+                )
+            raise
+
+        for appt_id, appt, req in new_appts:
+            state.setdefault("appointmentsById", {})[appt_id] = appt
+            touch(req, now, status="appointment-held", appointmentId=appt_id)
+            if w := state.get("workItemsById", {}).get(f"work-scheduling-{req['id']}"):
+                touch(w, now, status="in-progress")
+
+        value["entityIds"] = [a[0] for a in new_appts]
+        event = "scheduling-coordinated-package-held"
+        esr_id = new_appts[0][1]["esrId"] if new_appts else ""
+
     elif action == "recordOutreach":
         if len(args) >= 5 and isinstance(args[1], str) and args[1] in state.get("appointmentsById", {}):
             appt_id, channel, outcome, note = args[1], str(args[2]), str(args[3]), str(args[4]).strip()
@@ -1009,10 +1507,11 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
         outreach_log = appt.setdefault("outreachLog", [])
         if any(entry.get("outcome") == "answered" for entry in outreach_log):
             raise HTTPException(422, "Veteran has already confirmed this appointment.")
-        if len(outreach_log) >= 2:
+        max_attempts = DEFAULT_RANKING_CONFIG.get("maxOutreachAttempts", 2)
+        if len(outreach_log) >= max_attempts:
             raise HTTPException(
                 422,
-                "Maximum of 2 outreach attempts reached for this held appointment. Cancel Hold / Reschedule to release the slot.",
+                f"Maximum of {max_attempts} outreach attempts reached for this held appointment. Cancel Hold / Reschedule to release the slot.",
             )
         log_entry = {"id": f"comm-{uuid4().hex[:8]}", "at": now, "actorId": actor, "channel": channel, "outcome": outcome, "note": note}
         outreach_log.append(log_entry)
@@ -1084,7 +1583,7 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
                     "Verify Veteran location (ZIP code or coordinates) before confirming an in-person travel appointment.",
                 )
             dist, _ = _facility_distance(loc, fac)
-            travel_limit = _resolve_travel_limit(esr, veteran)
+            travel_limit = _resolve_travel_limit(esr, veteran, reqs[0] if reqs else None)
             logistics = appt.get("localLogistics") or {}
             if travel_limit is not None and dist is not None and dist > travel_limit and logistics.get("consentStatus") != "approved":
                 raise HTTPException(
@@ -1150,13 +1649,16 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
         appt = state.get("appointmentsById", {}).get(appt_id)
         if not appt:
             raise HTTPException(404, "Appointment not found.")
+        reason = str(args[1] if len(args) > 1 else "").strip()
+        if not reason:
+            raise HTTPException(422, "Provide a cancellation or reschedule reason.")
         if appt.get("slotId"):
             db.execute(
                 update(Stage3TimeSlot)
                 .where(Stage3TimeSlot.slot_id == appt["slotId"])
                 .values(slot_status="available")
             )
-        touch(appt, now, status="cancelled", cancelledAt=now, cancellationReason=str(args[1] if len(args) > 1 else ""))
+        touch(appt, now, status="cancelled", cancelledAt=now, cancelledBy=actor, cancellationReason=reason)
         for rid in appt.get("requirementIds", []):
             if req := state["examinationRequirementsById"].get(rid):
                 if req.get("status") != "superseded-by-evidence-revision":
@@ -1166,6 +1668,32 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
                     touch(w, now, status="queued")
         event = "scheduling-appointment-cancelled"
         esr_id = appt["esrId"]
+        value["entityId"] = appt_id
+        value["cancellationReason"] = reason
+        value["cancelledAt"] = now
+        value["cancelledBy"] = actor
+        next_seq = int(db.scalar(select(func.coalesce(func.max(AuditEvent.sequence), 0))) or 0) + 1
+        db.add(AuditEvent(
+            sequence=next_seq,
+            actor_id=actor,
+            action=event,
+            object_ref=appt_id,
+            detail=json.dumps({
+                "esrId": esr_id,
+                "appointmentId": appt_id,
+                "facilityId": appt.get("facilityId"),
+                "facilityName": appt.get("facilityName"),
+                "examinerId": appt.get("examinerId"),
+                "examinerName": appt.get("examinerName"),
+                "slotId": appt.get("slotId"),
+                "startsAt": appt.get("startsAt"),
+                "endsAt": appt.get("endsAt"),
+                "outreachLog": appt.get("outreachLog", []),
+                "cancellationReason": reason,
+                "cancelledAt": now,
+                "cancelledBy": actor,
+            }, ensure_ascii=False),
+        ))
 
     elif action == "setSchedulingDistanceLimit":
         esr_id = str(args[0] if args else "")
@@ -1232,6 +1760,7 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
         "at": now,
         "actorId": actor,
         "action": event,
+        **({"detail": value["cancellationReason"]} if value.get("cancellationReason") else {}),
     }
     state.update(revision=state["revision"] + 1, updatedAt=now)
     return {"state": state, "value": value}

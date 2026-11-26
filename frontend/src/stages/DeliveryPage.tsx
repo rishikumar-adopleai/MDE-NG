@@ -1,3 +1,4 @@
+import { HeadingText } from '../HeadingText';
 import { useState } from 'react';
 import { Activity, ArrowRight, FileText, ListChecks } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';
@@ -104,7 +105,7 @@ function PackagePanel({ detail, onRework, onClosed }: { detail: DeliveryDetail; 
           {pack.simulatedResponse && <Status text={labelFor(pack.simulatedResponse)} tone={pack.simulatedResponse === 'accepted' ? 'green' : 'slate'} />}</div>
         {detail.blockers.length > 0 && <ul className="stage-list">{detail.blockers.map(issue => <li key={issue}>{formatWorkspaceCopy(issue)}</li>)}</ul>}
         {!!detail.reports.length && <ul className="stage-records">{detail.reports.map(report => <li key={report.id}><div className="stage-card-header"><b>{report.formType}</b><small>{labelFor(report.status)}</small></div></li>)}</ul>}
-        {!!detail.diagnostics.length && <details><summary>Reviewed diagnostic references</summary><ul className="stage-list">{detail.diagnostics.map(item => <li key={item.id}>{item.reference}</li>)}</ul></details>}
+        {!!detail.diagnostics.length && <details><summary><HeadingText>Reviewed diagnostic references</HeadingText></summary><ul className="stage-list">{detail.diagnostics.map(item => <li key={item.id}>{item.reference}</li>)}</ul></details>}
         <ActionFeedback result={feedback} />
         <StageActions>
           {actions.validate && <button type="button" className="intake-secondary" disabled={pending} onClick={() => void execute(() => validateResultsPackage(pack.id))}>Validate package</button>}

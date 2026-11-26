@@ -92,7 +92,7 @@
 }
 .stage-flow-copy { display: grid; gap: 3px; min-width: 0; }
 .stage-flow-copy > span { color: #558078; font-size: 8px; font-weight: 850; letter-spacing: .13em; }
-.stage-flow-copy > b { color: #1c3940; font-family: 'Plus Jakarta Sans', sans-serif; font-size: 13px; }
+.stage-flow-copy > b { color: #1c3940; font-family:var(--font); font-size: 13px; }
 .stage-flow-copy > small { color: #637b7a; font-size: 9px; line-height: 1.4; }
 .stage-flow ol { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; margin: 0; padding: 0; list-style: none; }
 .stage-flow li { display: flex; align-items: flex-start; gap: 7px; min-width: 0; color: #899596; }

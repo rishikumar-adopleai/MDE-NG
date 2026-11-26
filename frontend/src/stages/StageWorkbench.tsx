@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
+import { HeadingText } from '../HeadingText';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight, ChevronDown, Inbox, Search } from 'lucide-react';
 import { useWorkspace, type CommandResult } from '../context/WorkspaceContext';
 import { getWorkItemsByStage } from '../domain/selectors';
@@ -7,6 +8,7 @@ import { caseStateTone, formatStatus, formatWorkspaceCopy, practiceCaseLabel } f
 import { Status } from './shared';
 import { StageAIReview } from './StageAIReview';
 import { StageHeading } from './StageHeading';
+import { useQueueRows } from './useQueueRows';
 
 type QueueFilter = 'all' | 'exception' | 'review' | 'ready';
 export type StageProps = {
@@ -60,7 +62,7 @@ export function StageActions({ children }: { children: ReactNode }) {
 }
 
 export function StageBlock({ title, children, description }: { title: string; children: ReactNode; description?: string }) {
-  return <section className="stage-block"><h3>{title}</h3>{description && <p className="stage-description">{description}</p>}{children}</section>;
+  return <section className="stage-block"><h3><HeadingText>{title}</HeadingText></h3>{description && <p className="stage-description">{description}</p>}{children}</section>;
 }
 
 export function StageHandoff({ stage, esrId, entityId, children, onNavigate }: {stage: StageKey; esrId: string; entityId?: string; children: ReactNode; onNavigate: StageProps['onNavigate']}) {
@@ -81,7 +83,10 @@ function WorkDetail<T>({ item, render }: { item: WorkItem; render: (detail: T, i
     getWorkItem<T>(item.id, controller.signal).then(result => {
       if (!controller.signal.aborted) setDetail(result);
     }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setError(error instanceof Error ? error.message : 'Unable to load this work item.');
+      if (!controller.signal.aborted) {
+        setDetail(undefined);
+        setError(error instanceof Error ? error.message : 'Unable to load this work item.');
+      }
     });
     return () => controller.abort();
   }, [item.id, getWorkItem, state?.revision, retry]);
@@ -115,22 +120,14 @@ export function StageWorkbench<T>({ stage, description, title, query, onQueryCha
     return requirement?.title ?? item.title;
   };
   const workStatus = (item: WorkItem) => state?.appointmentsById[item.entityId]?.status ?? item.status;
-  const queueList = useRef<HTMLUListElement>(null);
+  const queueList = useQueueRows(active?.id, open, `${activeFilter}:${query}`);
   const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => {
-    const list = queueList.current;
-    const selected = list?.querySelector('button[aria-pressed="true"]');
-    if (!list?.clientHeight || !selected) return;
-    const bounds = list.getBoundingClientRect(), row = selected.getBoundingClientRect();
-    if (row.top < bounds.top) list.scrollTop += row.top - bounds.top;
-    if (row.bottom > bounds.bottom) list.scrollTop += row.bottom - bounds.bottom;
-  }, [open, active?.id]);
-  return <div className="intake-page operations-page">
+  return <div className="intake-page operations-page queue-workbench">
     <StageHeading stage={stage} description={description}><button type="button" className="intake-secondary" onClick={openSource}>Reference library</button></StageHeading>
     {handoff}
     <div className="intake-board">
       <aside className="intake-queue-card" aria-labelledby="stage-queue-heading">
-        <div className="intake-queue-heading"><h2 id="stage-queue-heading">{title}</h2><span>{rows.length} open</span></div>
+        <div className="intake-queue-heading"><h2 id="stage-queue-heading"><HeadingText>{title}</HeadingText></h2><span>{rows.length} open</span></div>
         <button type="button" className="intake-queue-toggle" aria-expanded={open} aria-controls="stage-queue" onClick={() => setOpen(!open)}><Inbox size={17} />{open ? 'Hide work queue' : 'Choose a work item'}<small>{rows.length} open</small><ChevronDown size={16} /></button>
         <div id="stage-queue" className={`intake-queue-controls${open ? ' is-open' : ''}`}>
           <div className="intake-queue-toolbar"><label className="intake-search"><Search size={17} /><input type="search" value={query} onChange={event => onQueryChange(event.target.value)} placeholder="Search work queue" aria-label={`Search ${stage} queue`} /></label>
@@ -140,7 +137,8 @@ export function StageWorkbench<T>({ stage, description, title, query, onQueryCha
           </div>
           {rows.length ? <ul ref={queueList} className="intake-queue-list">{rows.map(item => <li key={item.id}>
             <button type="button" className="intake-queue-row" aria-pressed={item.id === active?.id} onClick={() => {
-              setFocusId(item.id); onSelect(item.esrId); setOpen(false); requestAnimationFrame(() => heading.current?.focus());
+              setFocusId(item.id); onSelect(item.esrId);
+              if (open) { setOpen(false); requestAnimationFrame(() => heading.current?.focus()); }
             }}>
               <span className="intake-queue-row-main"><strong>{appointmentLabel(item)}</strong><small>{claimant(item)}</small><small className="workflow-queue-reference">{practiceCaseLabel(state?.esrsById[item.esrId]) ?? item.esrId}</small></span>
               <Status text={formatStatus(workStatus(item))} tone={caseStateTone(workStatus(item))} />
@@ -148,15 +146,13 @@ export function StageWorkbench<T>({ stage, description, title, query, onQueryCha
           </li>)}</ul> : <div className="intake-queue-empty"><p>No work matches this view.</p><button type="button" className="intake-text-action" onClick={onReset}>Reset filters</button></div>}
         </div>
       </aside>
-      {active ? <section className="intake-case-card" aria-labelledby="stage-work-title">
+      {active ? <section className="intake-case-card queue-detail" key={active.id} aria-labelledby="stage-work-title" tabIndex={0}>
         <header className="intake-case-header"><span className="intake-case-avatar"><Inbox size={20} aria-hidden="true" /></span><div className="intake-case-identity">
           <span>{practiceCaseLabel(state?.esrsById[active.esrId]) ?? active.esrId} · {claimant(active)}</span><h2 ref={heading} tabIndex={-1} id="stage-work-title">{active.title}</h2>
         </div><span className="intake-case-status"><Status text={formatStatus(active.status)} tone={caseStateTone(active.status)} /></span></header>
-        <Fragment key={active.id}>
-          <StageAIReview stage={stage} entityId={active.entityId} />
-          <WorkDetail<T> item={active} render={render} />
-        </Fragment>
-      </section> : <section className="intake-case-empty"><Inbox size={25} /><h2>No work item selected</h2><p>Eligible records appear here as they enter this stage.</p></section>}
+        <StageAIReview stage={stage} entityId={active.entityId} />
+        <WorkDetail<T> item={active} render={render} />
+      </section> : <section className="intake-case-empty"><Inbox size={25} /><h2><HeadingText>No work item selected</HeadingText></h2><p>Eligible records appear here as they enter this stage.</p></section>}
     </div>
   </div>;
 }

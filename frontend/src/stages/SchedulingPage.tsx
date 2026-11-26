@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowRight,
   Calendar,
   CheckCircle2,
+  ChevronDown,
   Clock,
   Inbox,
   Loader2,
@@ -15,8 +16,9 @@ import {
   Users,
 } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';
-import { matchSchedulingOptions } from '../data/repositories/workspaceApi';
+import { matchCoordinatedScheduling, matchSchedulingOptions } from '../data/repositories/workspaceApi';
 import type {
+  CoordinatedMatchResponse,
   Modality,
   SchedulingCaseRequirement,
   SchedulingCaseView,
@@ -38,7 +40,7 @@ function ProgressiveScheduleFinder({
   modality: Modality;
   onHeld: () => void;
 }) {
-  const { holdAppointment } = useWorkspace();
+  const { state, holdAppointment } = useWorkspace();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -46,6 +48,29 @@ function ProgressiveScheduleFinder({
   const [match, setMatch] = useState<SchedulingMatchResponse | null>(null);
   const [selectedSlotId, setSelectedSlotId] = useState('');
   const [showExcluded, setShowExcluded] = useState(false);
+
+  const apptSignature = Object.values(state?.appointmentsById ?? {})
+    .map(a => `${a.id}:${a.status}`)
+    .join(',');
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void matchSchedulingOptions(
+      requirementIds,
+      match?.selectedFacilityId ?? undefined,
+      match?.selectedDoctorId ?? undefined,
+    ).then(res => {
+      if (cancelled) return;
+      setMatch(res);
+      setSelectedSlotId(prev => (res.slots.some(s => s.slotId === prev) ? prev : (res.slots[0]?.slotId || '')));
+    }).catch(() => {
+      // Keep current state if background refresh fails
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [apptSignature, open]);
 
   const runMatch = async (facilityId?: string, examinerId?: string) => {
     setOpen(true);
@@ -84,7 +109,22 @@ function ProgressiveScheduleFinder({
         modality: slot.modality,
       });
       if (!res.ok) {
-        setError(res.message);
+        if (res.message.toLowerCase().includes('overlap') || res.message.toLowerCase().includes('no longer available')) {
+          try {
+            const refreshed = await matchSchedulingOptions(
+              requirementIds,
+              match.selectedFacilityId ?? undefined,
+              match.selectedDoctorId ?? undefined,
+            );
+            setMatch(refreshed);
+            setSelectedSlotId(refreshed.slots[0]?.slotId || '');
+            setError(`${res.message} Available conflict-free slots have been refreshed.`);
+          } catch {
+            setError(res.message);
+          }
+        } else {
+          setError(res.message);
+        }
         return;
       }
       setOpen(false);
@@ -318,13 +358,18 @@ function HeldAppointmentCard({
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelError, setCancelError] = useState('');
 
   const isConfirmed = appt.status === 'confirmed-locally';
   const outreachLog = appt.outreachLog ?? [];
   const outreachCount = outreachLog.length;
-  const maxOutreachReached = outreachCount >= 2;
+  const maxOutreachAttempts = 2;
+  const maxOutreachReached = outreachCount >= maxOutreachAttempts;
   const veteranConfirmed = outreachLog.some(entry => entry.outcome === 'answered');
-  const outreachDisabled = busy || maxOutreachReached || veteranConfirmed;
+  const outreachDisabled = busy || veteranConfirmed;
+  const isLocationPending = appt.modality === 'in-person' && locationMissing;
 
   const handleOutreach = async () => {
     setBusy(true);
@@ -351,11 +396,21 @@ function HeldAppointmentCard({
   };
 
   const handleCancel = async () => {
+    const trimmed = cancelReason.trim();
+    if (!trimmed) {
+      setCancelError('Please provide a reason for cancelling or rescheduling this hold.');
+      return;
+    }
     setBusy(true);
-    setError('');
+    setCancelError('');
     try {
-      const res = await cancelAppointment(appt.id, 'Rescheduling requested by staff');
-      if (!res.ok) setError(res.message);
+      const res = await cancelAppointment(appt.id, trimmed);
+      if (!res.ok) {
+        setCancelError(res.message);
+        return;
+      }
+      setShowCancelModal(false);
+      setCancelReason('');
     } finally {
       setBusy(false);
     }
@@ -402,25 +457,170 @@ function HeldAppointmentCard({
           </div>
           {outreachCount > 0 && (
             <div className="sched-outreach-count">
-              {outreachCount} / 2 outreach attempt(s) logged · Latest: {outreachLog[outreachCount - 1].channel} ({outreachLog[outreachCount - 1].outcome})
+              {outreachCount} / {maxOutreachAttempts} outreach attempt(s) logged · Latest: {outreachLog[outreachCount - 1].channel} ({outreachLog[outreachCount - 1].outcome})
             </div>
           )}
           {maxOutreachReached && !veteranConfirmed && (
-            <p className="triage-inline-note">
-              Maximum 2 outreach attempts reached without Veteran confirmation. Cancel Hold / Reschedule to release this slot.
-            </p>
+            <div
+              className="triage-inline-note"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                color: '#b45309',
+                background: '#fffbeb',
+                border: '1px solid #fef3c7',
+                padding: '6px 10px',
+                borderRadius: '6px',
+                fontSize: '12px',
+                marginTop: '6px',
+              }}
+            >
+              <Clock size={13} aria-hidden="true" />
+              <span>Standard outreach limit ({maxOutreachAttempts} attempts) reached. Awaiting claimant callback or supervisor escalation. Hold remains active.</span>
+            </div>
+          )}
+          {isLocationPending && (
+            <div
+              className="triage-inline-note"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                color: '#b45309',
+                background: '#fffbeb',
+                border: '1px solid #fef3c7',
+                padding: '6px 10px',
+                borderRadius: '6px',
+                fontSize: '12px',
+                marginTop: '8px',
+              }}
+            >
+              <MapPin size={13} aria-hidden="true" />
+              <span>Veteran residential location pending. Please verify location in the header above before confirming.</span>
+            </div>
           )}
           {error && <p className="intake-error" role="alert">{error}</p>}
-          {(locationMissing || error.includes('Verify Veteran location')) && (
-            <LocationVerifyInputs esrId={appt.esrId} onSaved={() => setError('')} />
-          )}
           <div className="sched-coord-actions">
-            <button type="button" className="intake-text-action" disabled={busy} onClick={() => void handleCancel()}>
+            <button
+              type="button"
+              className="intake-text-action"
+              disabled={busy}
+              onClick={() => {
+                setCancelReason('');
+                setCancelError('');
+                setShowCancelModal(true);
+              }}
+            >
               Cancel Hold / Reschedule
             </button>
-            <button type="button" className="intake-primary" disabled={busy || !veteranConfirmed} onClick={() => void handleConfirm()}>
+            <button
+              type="button"
+              className="intake-primary"
+              disabled={busy || !veteranConfirmed || Boolean(isLocationPending)}
+              title={isLocationPending ? 'Please verify Veteran location in the header above before confirming' : !veteranConfirmed ? 'Veteran confirmation required via outreach' : 'Confirm appointment and advance to Stage 4'}
+              onClick={() => void handleConfirm()}
+            >
               Confirm Appointment → Stage 4 <ArrowRight size={15} />
             </button>
+          </div>
+        </div>
+      )}
+
+      {showCancelModal && (
+        <div
+          className="dialog-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={`cancel-hold-title-${appt.id}`}
+          onClick={() => { if (!busy) setShowCancelModal(false); }}
+        >
+          <div className="workflow-dialog" onClick={e => e.stopPropagation()}>
+            <div className="dialog-header">
+              <div>
+                <span className="dialog-kicker">STAGE 3 · CANCELLATION &amp; RESCHEDULE LOG</span>
+                <h2 id={`cancel-hold-title-${appt.id}`}>Cancel Hold / Reschedule</h2>
+                <p>Record why this held slot is being released. The reason and full appointment log will be saved to the database.</p>
+              </div>
+            </div>
+            <div className="dialog-body">
+              <div className="dialog-case">
+                <Calendar size={18} />
+                <span>
+                  <b>{appt.facilityName || appt.facilityId}</b>
+                  <small>{appt.examinerName || appt.examinerId} · {dateLabel(appt.startsAt)} · {modalityLabels[appt.modality]}</small>
+                </span>
+              </div>
+
+              <div className="dialog-field">
+                <span>Quick reasons (optional)</span>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
+                  {[
+                    'Veteran requested different date or time',
+                    'No answer after outreach attempts',
+                    'Location or travel limit change',
+                    'Examiner or facility conflict',
+                  ].map(preset => (
+                    <button
+                      key={preset}
+                      type="button"
+                      className="intake-secondary"
+                      style={{ fontSize: '11px', padding: '4px 9px' }}
+                      disabled={busy}
+                      onClick={() => {
+                        setCancelReason(preset);
+                        setCancelError('');
+                      }}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <label className="dialog-field">
+                <span>Why are you cancelling or rescheduling? *</span>
+                <textarea
+                  rows={3}
+                  value={cancelReason}
+                  disabled={busy}
+                  onChange={e => {
+                    setCancelReason(e.target.value);
+                    if (cancelError) setCancelError('');
+                  }}
+                  placeholder="Enter the reason for cancelling this hold…"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    border: '1px solid #ccd5e7',
+                    borderRadius: '10px',
+                    fontSize: '12px',
+                    fontFamily: 'inherit',
+                    resize: 'vertical',
+                  }}
+                />
+              </label>
+
+              {cancelError && <p className="dialog-error" role="alert">{cancelError}</p>}
+            </div>
+            <div className="dialog-footer">
+              <button
+                type="button"
+                className="intake-secondary"
+                disabled={busy}
+                onClick={() => setShowCancelModal(false)}
+              >
+                Keep Hold
+              </button>
+              <button
+                type="button"
+                className="intake-primary"
+                disabled={busy || !cancelReason.trim()}
+                onClick={() => void handleCancel()}
+              >
+                {busy ? 'Saving & Cancelling…' : 'Save & Cancel Hold'}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -433,14 +633,21 @@ function LocationVerifyBar({
 }: {
   activeCase: SchedulingCaseView;
 }) {
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(!activeCase.postalCode);
 
   return (
     <div className="sched-location-wrap">
       <div className="triage-case-meta">
         {activeCase.claimIdentifier} · <MapPin size={13} style={{ display: 'inline', verticalAlign: '-2px' }} />{' '}
-        {activeCase.city || 'Location pending'}
-        {activeCase.stateCode ? `, ${activeCase.stateCode}` : ''} {activeCase.postalCode}{' '}
+        {activeCase.postalCode ? (
+          <span style={{ color: '#166534', fontWeight: 600 }}>
+            {activeCase.city ? `${activeCase.city}, ` : ''}{activeCase.stateCode ? `${activeCase.stateCode} ` : ''}{activeCase.postalCode} · Location verified
+          </span>
+        ) : (
+          <span style={{ color: '#b45309', fontWeight: 600 }}>
+            Location pending
+          </span>
+        )}{' '}
         <button
           type="button"
           className="intake-text-action"
@@ -463,6 +670,303 @@ function LocationVerifyBar({
   );
 }
 
+function CoordinatedScheduleFinder({
+  activeCase,
+  onHeld,
+}: {
+  activeCase: SchedulingCaseView;
+  onHeld: () => void;
+}) {
+  const { state, holdCoordinatedAppointments } = useWorkspace();
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [data, setData] = useState<CoordinatedMatchResponse | null>(null);
+  const [selectedPkgId, setSelectedPkgId] = useState('');
+
+  const apptSignature = Object.values(state?.appointmentsById ?? {})
+    .map(a => `${a.id}:${a.status}`)
+    .join(',');
+
+  const loadPackages = async () => {
+    setOpen(true);
+    setLoading(true);
+    setError('');
+    try {
+      const res = await matchCoordinatedScheduling(activeCase.esrId);
+      setData(res);
+      setSelectedPkgId(res.bestPackageId || (res.packages[0]?.packageId ?? ''));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to find coordinated visit packages.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void matchCoordinatedScheduling(activeCase.esrId)
+      .then(res => {
+        if (cancelled) return;
+        setData(res);
+        setSelectedPkgId(prev =>
+          res.packages.some(p => p.packageId === prev)
+            ? prev
+            : res.bestPackageId || res.packages[0]?.packageId || '',
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [apptSignature, open, activeCase.esrId]);
+
+  const selectedPkg = data?.packages.find(p => p.packageId === selectedPkgId) ?? data?.packages[0];
+
+  const handleHoldCoordinated = async () => {
+    if (!selectedPkg || !selectedPkg.items.length) return;
+    setBusy(true);
+    setError('');
+    try {
+      const payload = selectedPkg.items.map(it => ({
+        requirementId: it.requirementId,
+        examinerId: it.examinerId,
+        slot: {
+          slotId: it.slotId,
+          startsAt: it.startsAt,
+          endsAt: it.endsAt,
+          facilityId: selectedPkg.facilityId,
+          modality: it.modality,
+        },
+      }));
+      const res = await holdCoordinatedAppointments(payload);
+      if (!res.ok) {
+        setError(res.message);
+        return;
+      }
+      setOpen(false);
+      onHeld();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to hold coordinated package.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pendingRequirements = activeCase.requirements.filter(r => !r.appointment);
+
+  if (pendingRequirements.length === 0) {
+    return (
+      <div
+        className="sched-coordinated-done"
+        style={{
+          padding: '16px 20px',
+          background: '#f0fdf4',
+          borderRadius: '12px',
+          border: '1px solid #bbf7d0',
+          marginBottom: '20px',
+        }}
+      >
+        <strong style={{ color: '#166534', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px' }}>
+          <CheckCircle2 size={18} /> All Approved Examinations Coordinated &amp; Held
+        </strong>
+        <p style={{ margin: '6px 0 0', fontSize: '13px', color: '#166534' }}>
+          All required examinations have been matched to appointment slots. Follow the standard claimant outreach and confirmation steps below.
+        </p>
+      </div>
+    );
+  }
+
+  if (!open) {
+    return (
+      <div className="sched-finder-trigger" style={{ marginBottom: '20px' }}>
+        <button type="button" className="intake-primary" onClick={() => void loadPackages()}>
+          <Users size={15} /> Find Coordinated Same-Day Packages ({pendingRequirements.length} Pending)
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="sched-finder-panel" style={{ marginBottom: '24px' }}>
+      <div className="sched-finder-head">
+        <div>
+          <strong>Coordinated Multi-Exam Schedule · VA RFP 5.2.2 Compliance</strong>
+          <small>Evaluating common facilities, qualified specialists &amp; conflict-free same-day slots</small>
+        </div>
+        <button type="button" className="intake-text-action" onClick={() => setOpen(false)}>
+          Close
+        </button>
+      </div>
+
+      {loading && (
+        <div className="sched-loading-row" role="status">
+          <Loader2 size={16} className="triage-spinner" />
+          <span>Searching cross-specialty availability, verifying active licenses on exam dates, and matching single-visit packages…</span>
+        </div>
+      )}
+
+      {error && <p className="intake-error" role="alert">{error}</p>}
+
+      {!loading && data && selectedPkg && (
+        <div className="sched-coordinated-content" style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginTop: '12px' }}>
+          <div
+            style={{
+              padding: '14px 18px',
+              background: selectedPkg.coverageType === 'full' ? '#f0fdf4' : selectedPkg.coverageType === 'partial' ? '#fffbeb' : '#f8fafc',
+              border: `1px solid ${selectedPkg.coverageType === 'full' ? '#bbf7d0' : selectedPkg.coverageType === 'partial' ? '#fef08a' : '#cbd5e1'}`,
+              borderRadius: '10px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontWeight: 700,
+                  fontSize: '13px',
+                  color: selectedPkg.coverageType === 'full' ? '#166534' : selectedPkg.coverageType === 'partial' ? '#854d0e' : '#475569',
+                }}
+              >
+                <CheckCircle2 size={16} /> {selectedPkg.badge}
+              </span>
+              <span style={{ fontSize: '11px', color: '#64748b' }}>
+                {selectedPkg.contractualNotice}
+              </span>
+            </div>
+            <p style={{ margin: 0, fontSize: '13px', color: '#334155', lineHeight: 1.5 }}>
+              {selectedPkg.explanation}
+            </p>
+          </div>
+
+          {data.packages.length > 1 && (
+            <div className="sched-step-block">
+              <span className="sched-step-kicker">
+                Select Coordinated Package ({data.packages.length} options evaluated &amp; ranked)
+              </span>
+              <select
+                value={selectedPkgId}
+                onChange={e => setSelectedPkgId(e.target.value)}
+                style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px' }}
+              >
+                {data.packages.map((pkg, idx) => {
+                  const distLabel = pkg.distanceMiles != null ? ` · ~${pkg.distanceMiles} mi` : '';
+                  const waitLabel = pkg.totalIdleWaitMinutes != null && pkg.items.length > 1 ? ` · ${pkg.totalIdleWaitMinutes}m wait` : '';
+                  return (
+                    <option key={pkg.packageId} value={pkg.packageId}>
+                      {idx === 0 ? '★ [Recommended] ' : ''}{pkg.badge} · {pkg.facilityName} ({pkg.date}{distLabel}{waitLabel}) · {pkg.items.length} exams
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          )}
+
+          {selectedPkg.items.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ fontSize: '12px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>Proposed Single-Visit Itinerary ({dateLabel(selectedPkg.visitStartsAt)} — {dateLabel(selectedPkg.visitEndsAt).split(',').slice(-1)[0].trim()})</span>
+                {selectedPkg.totalIdleWaitMinutes != null && selectedPkg.items.length > 1 && (
+                  <span style={{ fontSize: '11px', color: '#64748b', fontWeight: 500, textTransform: 'none' }}>
+                    Total transition buffer: {selectedPkg.totalIdleWaitMinutes} min
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {selectedPkg.items.map((item, i) => (
+                  <div
+                    key={item.slotId || item.requirementId}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '12px 16px',
+                      background: '#ffffff',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: '8px',
+                      gap: '12px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <span
+                        style={{
+                          width: '26px',
+                          height: '26px',
+                          borderRadius: '50%',
+                          background: '#e0e7ff',
+                          color: '#3730a3',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '12px',
+                          fontWeight: 700,
+                        }}
+                      >
+                        {i + 1}
+                      </span>
+                      <div>
+                        <strong style={{ fontSize: '14px', color: '#0f172a' }}>{item.examinationType}</strong>
+                        <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>
+                          <Stethoscope size={12} style={{ display: 'inline', verticalAlign: '-1px', marginRight: '4px' }} />
+                          {item.examinerName} · {item.specialty} · License valid thru {item.licenseExpiryDate}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <span style={{ fontWeight: 600, fontSize: '13px', color: '#1e293b' }}>
+                        <Clock size={13} style={{ display: 'inline', verticalAlign: '-2px', marginRight: '4px' }} />
+                        {dateLabel(item.startsAt)} ({item.durationMinutes} min)
+                      </span>
+                      <div style={{ fontSize: '11px', color: '#16a34a', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '4px', marginTop: '2px' }}>
+                        <ShieldCheck size={12} /> License verified active
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {selectedPkg.unmatchedRequirements && selectedPkg.unmatchedRequirements.length > 0 && (
+                <div style={{ padding: '10px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '8px', fontSize: '12px', color: '#991b1b' }}>
+                  <strong>Remaining Unmatched Requirement(s):</strong>
+                  <ul style={{ margin: '4px 0 0', paddingLeft: '18px' }}>
+                    {selectedPkg.unmatchedRequirements.map(u => (
+                      <li key={u.requirementId}>{u.examinationType} — {u.reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div className="sched-hold-row" style={{ marginTop: '8px' }}>
+                <span className="sched-license-ok">
+                  <ShieldCheck size={14} /> All examiner licenses &amp; facility equipment pre-validated
+                </span>
+                <button
+                  type="button"
+                  className="intake-primary"
+                  disabled={busy}
+                  onClick={() => void handleHoldCoordinated()}
+                >
+                  {busy ? 'Holding Package…' : `Hold Coordinated Package (${selectedPkg.items.length} Appointments)`} <ArrowRight size={15} />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ padding: '14px', background: '#f8fafc', borderRadius: '8px', fontSize: '13px', color: '#475569' }}>
+              No common facility slots found. Please switch to <strong>Schedule Separately</strong> to book appointments individually.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SchedulingPage({
   openSource,
   query,
@@ -476,24 +980,70 @@ export function SchedulingPage({
 }: StageProps) {
   const { state } = useWorkspace();
   const [groupMode, setGroupMode] = useState<'separate' | 'grouped'>('separate');
+  const [schedFilter, setSchedFilter] = useState<'all' | 'needs-scheduling' | 'outreach-pending' | 'scheduled'>('all');
+  const [priorityFilter, setPriorityFilter] = useState<'all' | 'expedited' | 'coordinated' | 'location-pending'>('all');
   const [handoff, setHandoff] = useState<{ esrId: string; entityId?: string } | null>(null);
   const scheduling = state?.scheduling;
   const casesById = scheduling?.casesByEsrId ?? {};
   const orderedIds = scheduling?.queueIds ?? Object.keys(casesById);
   const allCases: SchedulingCaseView[] = orderedIds.map(id => casesById[id]).filter(Boolean);
 
+  const needsSchedulingCases = allCases.filter(c => c.pendingCount > 0 && c.requirements.some(r => !r.appointment));
+  const outreachPendingCases = allCases.filter(c => c.appointments.some(a => a?.status === 'held'));
+  const fullyScheduledCases = allCases.filter(c => c.pendingCount === 0 && c.scheduledCount > 0);
+
+  const schedFilters = [
+    { key: 'all', label: 'All cases', count: allCases.length },
+    { key: 'needs-scheduling', label: 'Needs Scheduling', count: needsSchedulingCases.length },
+    { key: 'outreach-pending', label: 'Outreach Pending', count: outreachPendingCases.length },
+    { key: 'scheduled', label: 'Fully Scheduled', count: fullyScheduledCases.length },
+  ];
+
   const queryLower = query.trim().toLowerCase();
   const visibleCases = allCases.filter(c => {
-    if (activeFilter === 'ready' && c.pendingCount === 0) return false;
-    if (!queryLower) return true;
-    return (
-      c.claimantName.toLowerCase().includes(queryLower) ||
-      c.esrId.toLowerCase().includes(queryLower) ||
-      c.requirements.some(r => r.examinationType.toLowerCase().includes(queryLower))
-    );
+    if (queryLower) {
+      const matches = (
+        c.claimantName.toLowerCase().includes(queryLower) ||
+        c.esrId.toLowerCase().includes(queryLower) ||
+        c.claimIdentifier.toLowerCase().includes(queryLower) ||
+        c.requirements.some(r => r.examinationType.toLowerCase().includes(queryLower))
+      );
+      if (!matches) return false;
+    }
+
+    if (schedFilter === 'needs-scheduling' && !(c.pendingCount > 0 && c.requirements.some(r => !r.appointment))) {
+      return false;
+    }
+    if (schedFilter === 'outreach-pending' && !c.appointments.some(a => a?.status === 'held')) {
+      return false;
+    }
+    if (schedFilter === 'scheduled' && !(c.pendingCount === 0 && c.scheduledCount > 0)) {
+      return false;
+    }
+
+    if (priorityFilter === 'expedited' && (c.priority as string) !== 'expedited' && (c.priority as string) !== 'urgent') {
+      return false;
+    }
+    if (priorityFilter === 'coordinated' && c.requirements.length < 2) {
+      return false;
+    }
+    if (priorityFilter === 'location-pending' && (c.postalCode && c.city)) {
+      return false;
+    }
+
+    return true;
   });
 
   const activeCase = visibleCases.find(c => c.esrId === selectedId) ?? visibleCases[0];
+
+  useEffect(() => {
+    if (visibleCases.length > 0) {
+      const isCurrentVisible = visibleCases.some(c => c.esrId === selectedId);
+      if (!isCurrentVisible) {
+        onSelect(visibleCases[0].esrId);
+      }
+    }
+  }, [schedFilter, priorityFilter, query, visibleCases, selectedId, onSelect]);
 
   return (
     <div className="intake-page">
@@ -518,18 +1068,34 @@ export function SchedulingPage({
                   onChange={e => onQueryChange(e.target.value)}
                 />
               </label>
-              <div className="intake-queue-filters">
-                {filters.map(f => (
+              <div className="intake-queue-filters" role="group" aria-label="Scheduling operational filters">
+                {schedFilters.map(f => (
                   <button
                     type="button"
                     key={f.key}
-                    aria-pressed={activeFilter === f.key}
-                    onClick={() => onFilterChange(f.key)}
+                    aria-pressed={schedFilter === f.key}
+                    onClick={() => setSchedFilter(f.key as any)}
                   >
-                    {f.key === 'all' ? 'All cases' : f.label} <span>{allCases.length}</span>
+                    {f.label} <span>{f.count}</span>
                   </button>
                 ))}
               </div>
+              <label className="intake-status-filter" style={{ marginTop: '8px' }}>
+                <span>Priority</span>
+                <span className="intake-status-control">
+                  <select
+                    aria-label="Filter scheduling priority and focus"
+                    value={priorityFilter}
+                    onChange={e => setPriorityFilter(e.target.value as any)}
+                  >
+                    <option value="all">All Priorities &amp; Focus</option>
+                    <option value="expedited">Expedited / Urgent SLA</option>
+                    <option value="coordinated">Multi-Exam Coordinated (2+ exams)</option>
+                    <option value="location-pending">Location Verification Needed</option>
+                  </select>
+                  <ChevronDown size={15} aria-hidden="true" />
+                </span>
+              </label>
             </div>
 
             {visibleCases.length ? (
@@ -544,11 +1110,26 @@ export function SchedulingPage({
                     >
                       <span className="intake-queue-row-main">
                         <strong>{c.claimantName}</strong>
-                        <small>{c.claimIdentifier} · {c.approvedCount} exam{c.approvedCount === 1 ? '' : 's'}</small>
+                        <small>
+                          {c.claimIdentifier} · {c.approvedCount} exam{c.approvedCount === 1 ? '' : 's'}
+                          {(c.priority as string) === 'expedited' || (c.priority as string) === 'urgent' ? ' · Expedited' : ''}
+                        </small>
                       </span>
                       <Status
-                        text={`${c.scheduledCount}/${c.approvedCount} Scheduled`}
-                        tone={c.pendingCount === 0 ? 'green' : 'amber'}
+                        text={
+                          c.pendingCount === 0
+                            ? 'Fully Scheduled'
+                            : c.appointments.some(a => a?.status === 'held')
+                              ? `${c.appointments.filter(a => a?.status === 'held').length} Held · Outreach`
+                              : `${c.scheduledCount}/${c.approvedCount} Scheduled`
+                        }
+                        tone={
+                          c.pendingCount === 0
+                            ? 'green'
+                            : c.appointments.some(a => a?.status === 'held')
+                              ? 'amber'
+                              : 'slate'
+                        }
                       />
                     </button>
                   </li>
@@ -556,7 +1137,18 @@ export function SchedulingPage({
               </ul>
             ) : (
               <div className="intake-queue-empty">
-                <p>No cases in Scheduling.</p>
+                <p>No cases match this filter.</p>
+                <button
+                  type="button"
+                  className="intake-text-action"
+                  onClick={() => {
+                    setSchedFilter('all');
+                    setPriorityFilter('all');
+                    onQueryChange('');
+                  }}
+                >
+                  Reset filters
+                </button>
               </div>
             )}
           </div>
@@ -638,27 +1230,11 @@ export function SchedulingPage({
 
             {groupMode === 'grouped' ? (
               <div className="triage-contention-list">
-                {activeCase.compatibleGroups.map((grp: SchedulingCompatibleGroup) => (
-                  <article key={grp.groupId} className="triage-card">
-                    <header className="triage-card-header">
-                      <div>
-                        <h3>{grp.titles.join(' + ')}</h3>
-                        <div className="triage-card-tags">
-                          <span className="triage-tag-specialty">{grp.specialtyGroup}</span>
-                          <span className="triage-tag-dbq">{modalityLabels[grp.modality]} (Locked from Stage 2)</span>
-                        </div>
-                      </div>
-                      <Status text={grp.isBundled ? `Bundled (${grp.requirementIds.length})` : 'Separate'} tone="slate" />
-                    </header>
-                    <p className="triage-pathway-reason">{grp.reason}</p>
-                    <ProgressiveScheduleFinder
-                      requirementIds={grp.requirementIds}
-                      title={grp.titles.join(' + ')}
-                      modality={grp.modality}
-                      onHeld={() => setHandoff(null)}
-                    />
-                  </article>
-                ))}
+                <CoordinatedScheduleFinder
+                  key={activeCase.esrId}
+                  activeCase={activeCase}
+                  onHeld={() => setHandoff(null)}
+                />
                 {activeCase.appointments.map(appt => appt && (
                   <HeldAppointmentCard
                     key={appt.id}

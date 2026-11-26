@@ -788,9 +788,10 @@ export function approveQAReview(state: WorkspaceState, reviewId: EntityId, appro
   });
   refreshPackages(next, dbq.esrId, now);
   addActivity(next, { esrId: dbq.esrId, entityId: reviewId, entityType: 'qa-review', action: 'qa-review-approved', rationale: 'QA approval recorded; package preparation may proceed.' }, now);
-  const contents = packageContents(next, dbq.esrId);
-  if (!contents.issues.length) return ensureResultsPackage(next, dbq.esrId);
-  return refreshWorkItems(next, now);
+  // Surface the ESR in Delivery as soon as an approved report can be packaged.
+  // ensureResultsPackage records unresolved reports as blockers, so reviewers can
+  // see what remains without allowing validation or preparation to proceed.
+  return ensureResultsPackage(next, dbq.esrId);
 }
 
 export function packageContents(state: WorkspaceState, esrId: string) {

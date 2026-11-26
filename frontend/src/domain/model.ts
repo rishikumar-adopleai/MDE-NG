@@ -994,6 +994,51 @@ export interface SchedulingMatchResponse {
   } | null;
 }
 
+export interface CoordinatedPackageItem {
+  requirementId: EntityId;
+  examinationType: string;
+  specialty: string;
+  modality: Modality;
+  examinerId: string;
+  examinerName: string;
+  licenseExpiryDate: string;
+  licenseStatus: string;
+  slotId: string;
+  startsAt: string;
+  endsAt: string;
+  durationMinutes: number;
+}
+
+export interface CoordinatedPackage {
+  packageId: string;
+  coverageType: 'full' | 'partial' | 'single' | 'separate';
+  badge: string;
+  facilityId: string;
+  facilityName: string;
+  city: string;
+  stateCode: string;
+  postalCode?: string;
+  distanceMiles?: number | null;
+  distancePrecision?: string;
+  withinTravelLimit: boolean;
+  date: string;
+  visitStartsAt: string;
+  visitEndsAt: string;
+  totalIdleWaitMinutes?: number;
+  items: CoordinatedPackageItem[];
+  unmatchedRequirements?: { requirementId: EntityId; examinationType: string; reason: string }[];
+  explanation: string;
+  contractualNotice: string;
+}
+
+export interface CoordinatedMatchResponse {
+  esrId: EntityId;
+  totalPendingCount: number;
+  packages: CoordinatedPackage[];
+  bestPackageId: string;
+  message?: string;
+}
+
 export interface SchedulingCompatibleGroup {
   groupId: string;
   modality: Modality;

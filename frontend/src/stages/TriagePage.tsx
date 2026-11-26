@@ -1,4 +1,6 @@
+import { HeadingText } from '../HeadingText';
 import { useEffect, useRef, useState } from 'react';
+import { useQueueRows } from './useQueueRows';
 import {
   AlertTriangle,
   ArrowRight,
@@ -177,7 +179,7 @@ function SourceDrawer({
       <aside className="triage-source-drawer" role="dialog" aria-modal="true" aria-label="Source clinical document viewer">
         <header className="triage-drawer-header">
           <div>
-            <span className="intake-kicker"><FileSearch size={14} /> Original Source Record</span>
+            <span className="intake-kicker"><FileSearch size={14} /> <HeadingText>Original Source Record</HeadingText></span>
             <h3>{documentName(matchedDoc?.title || target.documentTitle)}</h3>
             <small>
               {matchedDoc ? `${formatCategory(matchedDoc.category)} · ${matchedDoc.pageCount} page(s)` : target.citationLabel}
@@ -387,7 +389,7 @@ function ContentionPlanningCard({
       {/* Compact Evidence Preview + View More */}
       <div className="triage-card-evidence-box">
         <div className="triage-box-label">
-          <Stethoscope size={14} /> Relevant medical evidence ({matchedEvidence.length} matched page{matchedEvidence.length === 1 ? '' : 's'})
+          <Stethoscope size={14} /> <HeadingText>Relevant medical evidence</HeadingText> ({matchedEvidence.length} matched page{matchedEvidence.length === 1 ? '' : 's'})
           {dossier && dossier.negatedCount > 0 && (
             <span className="triage-negation-note">{dossier.negatedCount} negated/denied statement(s) separated</span>
           )}
@@ -445,7 +447,7 @@ function ContentionPlanningCard({
               <div className="triage-expanded-evidence">
                 {matchedEvidence.length > 0 && (
                   <div className="triage-matched-excerpts-list">
-                    <h4>All Matched Clinical Excerpts ({matchedEvidence.length})</h4>
+                    <h4><HeadingText>All matched clinical excerpts</HeadingText> ({matchedEvidence.length})</h4>
                     {matchedEvidence.map((mp, idx) => (
                       <div key={`${mp.documentId}-${mp.page}-${idx}`} className="triage-excerpt-item">
                         <div className="triage-excerpt-header">
@@ -475,7 +477,7 @@ function ContentionPlanningCard({
 
                 {documents.length > 0 && (
                   <div className="triage-linked-docs-list">
-                    <h4>Linked Source Documents ({documents.length})</h4>
+                    <h4><HeadingText>Linked source documents</HeadingText> ({documents.length})</h4>
                     {documents.map(doc => {
                       const brief = buildEvidenceBrief(doc, undefined, entry.contentionId);
                       return (
@@ -507,7 +509,7 @@ function ContentionPlanningCard({
         <div className="triage-stale-banner" role="alert">
           <AlertTriangle size={15} />
           <div>
-            <strong>Previous Plan Invalidated by Revised Evidence</strong>
+            <strong><HeadingText>Previous Plan Invalidated by Revised Evidence</HeadingText></strong>
             <span>{row.triageStaleReason}</span>
           </div>
         </div>
@@ -548,7 +550,7 @@ function ContentionPlanningCard({
               .filter(group => group.items.length > 0)
               .map(group => (
                 <div key={group.key} className="triage-gap-group">
-                  <div className="triage-gap-group-label">{group.title}</div>
+                  <div className="triage-gap-group-label"><HeadingText>{group.title}</HeadingText></div>
                   {group.items.map(gap => {
                     const badgeLabel =
                       gap.category === 'additional-dbq-consideration'
@@ -569,7 +571,7 @@ function ContentionPlanningCard({
                         <AlertTriangle size={15} />
                         <div className="triage-gap-content">
                           <div className="triage-gap-headline">
-                            <span className="triage-gap-badge">{badgeLabel}</span>
+                            <span className="triage-gap-badge"><HeadingText>{badgeLabel}</HeadingText></span>
                             <strong>{gap.message}</strong>
                           </div>
                           <span>{gap.recommendedAction}</span>
@@ -588,8 +590,8 @@ function ContentionPlanningCard({
         <div className="triage-pathway-proposal">
           <div className="triage-pathway-main">
             <div>
-              <span className="triage-pathway-kicker">VA-Specified Pathway</span>
-              <h4>{pathwayLabels[vaSpecifiedPathway]}</h4>
+              <span className="triage-pathway-kicker"><HeadingText>VA-Specified Pathway</HeadingText></span>
+              <h4><HeadingText>{pathwayLabels[vaSpecifiedPathway]}</HeadingText></h4>
               <p>Specified in the VA Examination Request instructions.</p>
             </div>
           </div>
@@ -627,7 +629,7 @@ function ContentionPlanningCard({
         <div className="triage-plan-section">
           {row?.awaitingResponse ? (
             <div className="triage-clarification-box">
-              <h4><MessageSquare size={16} /> Clarification requested via Prime EMS</h4>
+              <h4><MessageSquare size={16} /> <HeadingText>Clarification requested via Prime EMS</HeadingText></h4>
               <p>{item.clarificationReason}</p>
               <label className="intake-field">
                 <span>Response received</span>
@@ -732,7 +734,7 @@ function ContentionPlanningCard({
                         <b>{choice.specialty}</b> · Required credentials: {choice.credentials.join(' · ')}
                       </p>
                       <fieldset className="triage-options">
-                        <legend>Required & Secondary DBQs {isBvaRemand && <small>(BVA Remand scope protected)</small>}</legend>
+                        <legend><HeadingText>Required & Secondary DBQs</HeadingText> {isBvaRemand && <small>(BVA Remand scope protected)</small>}</legend>
                         {choice.dbqs.map(dbq => (
                           <label key={dbq}>
                             <input
@@ -749,7 +751,7 @@ function ContentionPlanningCard({
 
                       {choice.diagnostics.length > 0 && (
                         <fieldset className="triage-options">
-                          <legend>Optional Diagnostic Orders <small>(Only if needed for this exam — RFP 5.2.2)</small></legend>
+                          <legend><HeadingText>Optional diagnostic orders</HeadingText> <small>(Only if needed for this exam — RFP 5.2.2)</small></legend>
                           {choice.diagnostics.map(name => (
                             <label key={name}>
                               <input
@@ -883,6 +885,7 @@ export function TriagePage({
 
   const visibleCases = groups[activeFilter];
   const activeCase = visibleCases.find(c => c.esrId === selectedId) ?? visibleCases[0];
+  const queueList = useQueueRows(activeCase?.esrId, queueOpen, `${activeFilter}:${query}`);
   const activeEsr = activeCase ? esrsById[activeCase.esrId] : undefined;
   const activeDocs = activeEsr
     ? activeEsr.evidenceDocumentIds.map(id => evidenceDocumentsById[id]).filter((d): d is EvidenceDocument => Boolean(d))
@@ -891,6 +894,12 @@ export function TriagePage({
   useEffect(() => {
     setShowCaseEvidence(false);
   }, [activeCase?.esrId]);
+
+  useEffect(() => {
+    if (activeCase?.esrId && activeCase.processing?.status === 'queued' && !preparing) {
+      void handlePrepareNow(activeCase.esrId);
+    }
+  }, [activeCase?.esrId, activeCase?.processing?.status]);
 
   const isBackgroundProcessing = activeCase?.processing?.status === 'queued' || activeCase?.processing?.status === 'processing';
 
@@ -904,7 +913,7 @@ export function TriagePage({
   };
 
   return (
-    <div className="intake-page triage-page">
+    <div className="intake-page triage-page queue-workbench">
       <StageHeading
         stage="Medical Triage"
         description="Review extracted medical history, validate DBQ requirements, and approve individual examination plans before scheduling."
@@ -916,7 +925,7 @@ export function TriagePage({
         <div className="triage-success" role="status">
           <CheckCircle2 size={21} />
           <div>
-            <strong>Examination plan approved & queued for Scheduling</strong>
+            <strong><HeadingText>Examination plan approved & queued for Scheduling</HeadingText></strong>
             <p>{approvedBanner.title} · {approvedBanner.esrId}</p>
           </div>
           <button
@@ -941,7 +950,7 @@ export function TriagePage({
         {/* Left Queue Sidebar (Grouped by Patient / ESR) */}
         <aside className="intake-queue-card" aria-labelledby="triage-queue-title">
           <div className="intake-queue-heading">
-            <h2 id="triage-queue-title">Triage queue</h2>
+            <h2 id="triage-queue-title"><HeadingText>Triage queue</HeadingText></h2>
             <span>{visibleCases.length} {visibleCases.length === 1 ? 'case' : 'cases'}</span>
           </div>
 
@@ -984,7 +993,7 @@ export function TriagePage({
             </div>
 
             {visibleCases.length ? (
-              <ul className="intake-queue-list">
+              <ul className="intake-queue-list" ref={queueList}>
                 {visibleCases.map(c => (
                   <li key={c.esrId}>
                     <button
@@ -993,8 +1002,10 @@ export function TriagePage({
                       aria-pressed={activeCase?.esrId === c.esrId}
                       onClick={() => {
                         onSelect(c.esrId);
-                        setQueueOpen(false);
-                        requestAnimationFrame(() => caseHeading.current?.focus());
+                        if (queueOpen) {
+                          setQueueOpen(false);
+                          requestAnimationFrame(() => caseHeading.current?.focus());
+                        }
                       }}
                     >
                       <span className="intake-queue-row-main">
@@ -1029,37 +1040,40 @@ export function TriagePage({
 
         {/* Right Workspace: Clean 6-Section Clinical Planning Canvas */}
         {activeCase && activeEsr ? (
-          <section className="intake-case-card triage-case-workspace" aria-labelledby="triage-case-title">
-            {(isBackgroundProcessing || preparing) && (
-              <div className="triage-processing-overlay" role="status" aria-live="polite">
+          <section className="intake-case-card triage-case-workspace queue-detail" key={activeCase.esrId} aria-labelledby="triage-case-title" tabIndex={0}>
+            {(isBackgroundProcessing || preparing) ? (
+              <div className="triage-preparing-canvas" role="status" aria-live="polite">
                 <div className="triage-processing-card">
-                  <Loader2 size={28} className="triage-spinner" />
-                  <h3>Preparing Clinical Evidence & Examination Plan…</h3>
+                  <Loader2 size={36} className="triage-spinner" />
+                  <h3><HeadingText>Preparing clinical evidence & examination plan</HeadingText>…</h3>
                   <p>
                     Running Medical NLP, ICD-10/CPT code crosswalk, transparent record search, and VA Rules checks for <strong>{activeCase.claimantName}</strong>.
                   </p>
                   <div className="triage-processing-steps">
                     <span className="is-active">1. Medical NLP & Negation</span>
                     <span className="is-active">2. Evidence Matching</span>
-                    <span>3. AI Chronological Summary</span>
+                    <span className="is-active">3. AI Chronological Summary</span>
                   </div>
-                  <button
-                    type="button"
-                    className="intake-secondary"
-                    disabled={preparing}
-                    onClick={() => void handlePrepareNow(activeCase.esrId)}
-                  >
-                    {preparing ? 'Analyzing now…' : 'Complete analysis immediately'}
-                  </button>
+                  <div style={{ marginTop: '14px' }}>
+                    <button
+                      type="button"
+                      className="intake-primary"
+                      disabled={preparing}
+                      onClick={() => void handlePrepareNow(activeCase.esrId)}
+                    >
+                      {preparing ? 'Analyzing now…' : 'Complete analysis immediately'}
+                    </button>
+                  </div>
                 </div>
               </div>
-            )}
+            ) : (
+              <>
 
             {activeCase.processing.status === 'failed' && (
               <div className="triage-stale-banner" role="alert">
                 <AlertTriangle size={16} />
                 <div>
-                  <strong>Stage 2 background preparation failed</strong>
+                  <strong><HeadingText>Stage 2 background preparation failed</HeadingText></strong>
                   <span>{activeCase.processing.error || 'An error occurred while preparing this dossier.'}</span>
                 </div>
                 <button
@@ -1077,7 +1091,7 @@ export function TriagePage({
               <div className="triage-distress-banner" role="alert">
                 <ShieldAlert size={20} />
                 <div>
-                  <strong>URGENT CLINICAL SAFETY ALERT — Staff Review Required Immediately</strong>
+                  <strong><HeadingText>Urgent clinical safety alert</HeadingText> — Staff review required immediately.</strong>
                   {activeCase.distressAlerts.map((alert, i) => (
                     <p key={i}>
                       {alert.documentTitle} (p. {alert.pageNumber}): {alert.reason}
@@ -1147,7 +1161,7 @@ export function TriagePage({
             {activeCase.specialInstructions && (
               <div className="triage-va-instructions" role="region" aria-label="VA Instructions from Intake">
                 <div className="triage-va-header">
-                  <span className="triage-va-title"><strong>VA Request Special Instructions</strong></span>
+                  <span className="triage-va-title"><strong><HeadingText>VA Request Special Instructions</HeadingText></strong></span>
                 </div>
                 <p className="triage-va-text">{activeCase.specialInstructions}</p>
               </div>
@@ -1156,7 +1170,7 @@ export function TriagePage({
             {/* Section 2: Clean Medical Summary + Single "Evidence" Toggle Button */}
             <section className="triage-summary-section" aria-label="Medical Summary">
               <div className="triage-section-head">
-                <h3><Sparkles size={16} /> Overall Medical History Summary</h3>
+                <h3><Sparkles size={16} /> <HeadingText>Overall Medical History Summary</HeadingText></h3>
                 <div className="triage-overview-actions">
                   <span className="triage-provider-tag">
                     {activeCase.aiProvider && activeCase.aiProvider !== 'local'
@@ -1207,7 +1221,7 @@ export function TriagePage({
             {/* Section 3, 4 & 5: Requested Examinations (Contention Cards) */}
             <section className="triage-cards-section" aria-label="Requested examinations">
               <div className="triage-section-head">
-                <h3><ClipboardList size={16} /> Requested Examinations ({activeCase.contentions.length})</h3>
+                <h3><ClipboardList size={16} /> <HeadingText>Requested examinations</HeadingText> ({activeCase.contentions.length})</h3>
               </div>
               <div className="triage-cards-stack">
                 {activeCase.contentions.map(entry => {
@@ -1249,11 +1263,13 @@ export function TriagePage({
                 </button>
               )}
             </footer>
-          </section>
-        ) : (
+          </>
+        )}
+      </section>
+    ) : (
           <section className="intake-case-empty">
             <Inbox size={24} />
-            <h2>No cases to triage</h2>
+            <h2><HeadingText>No cases to triage</HeadingText></h2>
             <p>Validated Intake cases appear here once Stage 1 completes and sends them to Medical Triage.</p>
           </section>
         )}

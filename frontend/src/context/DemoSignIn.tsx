@@ -1,3 +1,4 @@
+import { HeadingText } from '../HeadingText';
 import { useState, type FormEvent } from 'react';
 import { ArrowRight, Hospital } from 'lucide-react';
 import { authenticateAccount } from '../data/repositories/workspaceApi';
@@ -32,7 +33,7 @@ export function AccountAccess() {
     <section className="account-card" aria-labelledby="account-title">
       <header className="account-heading">
         <div className="account-brand"><span><Hospital size={21} aria-hidden="true" /></span>MDE-NG</div>
-        <h1 id="account-title">{signup ? 'Create your account' : 'Sign in'}</h1>
+        <h1 id="account-title"><HeadingText>{signup ? 'Create your account' : 'Sign in'}</HeadingText></h1>
         <p>{signup ? 'Create an account to work in Intake.' : 'Access the examination workspace with your account.'}</p>
       </header>
       <form className="account-form" method="post" onSubmit={submit} aria-busy={busy}>

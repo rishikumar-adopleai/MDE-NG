@@ -1,3 +1,4 @@
+import { HeadingText } from '../HeadingText';
 import { useEffect, useId, useRef, useState } from 'react';
 import { ChevronRight, FileText, RefreshCw, Sparkles, X } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';
@@ -66,7 +67,7 @@ export function StageAIReview({ stage, entityId }: { stage: StageKey; entityId: 
   </span>;
 
   return <details className="stage-ai">
-    <summary><Sparkles size={17} aria-hidden="true" /><strong>{copy.title}</strong>
+    <summary><Sparkles size={17} aria-hidden="true" /><strong><HeadingText>{copy.title}</HeadingText></strong>
       <ChevronRight size={16} aria-hidden="true" />
     </summary>
     <div className="stage-ai-content">

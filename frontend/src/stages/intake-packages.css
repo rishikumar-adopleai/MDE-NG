@@ -1,0 +1,12 @@
+.intake-receive .intake-package-selection { display: grid; gap: 14px; padding: clamp(18px, 3vw, 30px); }
+.intake-receive .intake-package { border-top: 1px solid var(--intake-line); gap: 12px; }
+.intake-package h3 { margin: 0; }
+.intake-package > button, .intake-package-selection > button { justify-self: start; }
+.intake-picker-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.intake-dropzone .intake-picker-actions { justify-content: center; margin-top: 14px; }
+.intake-dropzone .intake-picker-actions button { margin-top: 0; }
+.intake-folder-choice { display: grid; gap: 10px; min-width: 0; margin: 0; padding: 16px; border: 1px solid var(--intake-line); border-radius: 10px; }
+.intake-folder-choice legend { padding: 0 4px; font-weight: 650; }
+.intake-folder-choice p { margin: 0; color: var(--intake-muted); }
+.intake-folder-choice label { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+.intake-folder-list { display: grid; gap: 4px; max-height: 14rem; overflow: auto; padding: 4px; }

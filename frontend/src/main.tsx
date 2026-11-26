@@ -2,6 +2,8 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import { canonicalEntryHref } from './workspaceRoutes';
+import '@fontsource-variable/inter/wght.css';
+import '@fontsource-variable/inter/wght-italic.css';
 import './styles.css';
 import './stage.css';
 import './layout.css';

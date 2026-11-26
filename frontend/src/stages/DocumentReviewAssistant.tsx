@@ -1,3 +1,4 @@
+import { HeadingText } from '../HeadingText';
 import { useEffect, useId, useRef, useState } from 'react';
 import { Bot, Check, CheckCircle2, ChevronRight, Paperclip, RefreshCw, X } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';
@@ -47,7 +48,7 @@ export function DocumentReviewAssistant({ esrId }: { esrId: string }) {
     <section className="ai-block intake-document-review" aria-label="Document review assistant">
       <div className="ai-block-head">
         <span><Bot size={18} aria-hidden="true" /></span>
-        <div><b>Document Review Assistant</b><small>Staff review</small></div>
+        <div><b><HeadingText>Document Review Assistant</HeadingText></b><small>Staff review</small></div>
         {review && <Status text="Suggestion" tone="violet" />}
       </div>
       {review && <ul>{[review.overview, ...review.review_points].map((point, index) => <li key={index}>

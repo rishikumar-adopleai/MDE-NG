@@ -29,6 +29,7 @@ type WorkspaceContextValue = {
   reviewIntakeDocuments: (esrId: string, signal: AbortSignal, disposition?: { reviewId: string; decision: DocumentReviewDecision }) => Promise<void>;
   recordOutreach: (esrId: EntityId, appointmentId: EntityId, channel: Communication['channel'], outcome: Communication['outcome'], summary: string, details?: { attemptedAt?: string; voicemail?: 'left' | 'unavailable' }) => Promise<CommandResult>;
   holdAppointment: (requirementOrExamId: EntityId | EntityId[], examinerId: EntityId, slot: { slotId?: string; startsAt: string; endsAt: string; facilityId: string; modality: Modality }) => Promise<CommandResult>;
+  holdCoordinatedAppointments: (items: Array<{ requirementId: EntityId; examinerId: EntityId; slot: { slotId?: string; startsAt: string; endsAt: string; facilityId: string; modality: Modality } }>) => Promise<CommandResult>;
   confirmAppointment: (id: EntityId, note?: string) => Promise<CommandResult>;
   setSchedulingDistanceLimit: (miles: number) => Promise<CommandResult>;
   verifyVeteranLocation: (esrId: EntityId, location: { city?: string; stateCode?: string; postalCode?: string }) => Promise<CommandResult>;
@@ -115,6 +116,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(timer);
   }, [workspaceLoaded, acceptState]);
 
+  const getWorkItem = useCallback(async <T,>(id: string, signal?: AbortSignal): Promise<T> => {
+    const version = sessionVersion.current;
+    try { return await loadWorkItem<T>(id, signal); }
+    catch (error) {
+      if (!signal?.aborted && error instanceof WorkspaceApiError && error.status === 404) {
+        await loadWorkspace().then(incoming => { if (!signal?.aborted) acceptState(incoming, version); }).catch(() => {});
+      }
+      throw error;
+    }
+  }, [acceptState]);
+
   const run = useCallback((action: string, args: unknown[], message: string): Promise<CommandResult> => {
     const version = sessionVersion.current;
     const operation = queueRef.current.then(async (): Promise<CommandResult> => {
@@ -194,11 +206,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       authorizeTriageAce: (id, rationale) => run('authorizeTriageAce', [id, rationale], 'ACE eligibility authorized by clinician for this examination.'),
       escalateDistressAlert: (id, note) => run('escalateDistressAlert', [id, note], 'Clinical safety alert escalated to authorized staff.'),
       prepareTriageDossier,
-      getWorkItem: loadWorkItem,
+      getWorkItem,
       requestStageReview: generateStageReview,
       reviewIntakeDocuments,
       recordOutreach: (esrId, appointmentId, channel, outcome, summary, details) => run('recordOutreach', [esrId, appointmentId, channel, outcome, summary, details], 'Claimant contact attempt recorded.'),
       holdAppointment: (id, examinerId, slot) => run('holdAppointment', [id, examinerId, slot], 'Appointment slot recorded; claimant confirmation is pending.'),
+      holdCoordinatedAppointments: (items) => run('holdCoordinatedAppointments', [items], 'Coordinated appointment package held; claimant confirmation is pending.'),
       confirmAppointment: (id, note) => run('confirmAppointment', [id, note], 'Appointment confirmation saved.'),
       setSchedulingDistanceLimit: (miles) => run('setSchedulingDistanceLimit', [miles], 'Travel limit saved.'),
       verifyVeteranLocation: (esrId, location) => run('verifyVeteranLocation', [esrId, location], 'Veteran scheduling location verified.'),
@@ -230,7 +243,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       recordSimulatedContentionCancellation: (esrId, contentionId, reason) => run('recordSimulatedContentionCancellation', [esrId, contentionId, reason], 'Contention cancellation recorded.'),
       closeESR: (id, note) => run('closeESR', [id, note], 'ESR closure recorded.'),
     };
-  }, [state, loading, storageError, runtime, importIntakeDocument, retryIntakeDocument, receiveIntakeExample, reviewIntakeDocuments, prepareTriageDossier, run]);
+  }, [state, loading, storageError, runtime, importIntakeDocument, retryIntakeDocument, receiveIntakeExample, reviewIntakeDocuments, prepareTriageDossier, getWorkItem, run]);
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

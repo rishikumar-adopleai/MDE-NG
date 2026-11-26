@@ -133,3 +133,17 @@ export function matchSchedulingOptions(
     }),
   });
 }
+
+export function matchCoordinatedScheduling(
+  esrId: string,
+  requirementIds?: string[],
+) {
+  return request<import('../../domain/model').CoordinatedMatchResponse>('/scheduling/match-coordinated', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      esrId,
+      requirementIds: requirementIds && requirementIds.length ? requirementIds : null,
+    }),
+  });
+}

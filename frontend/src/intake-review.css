@@ -49,6 +49,9 @@
 .intake-receive footer button:first-child { margin-right: auto; }
 .intake-page [hidden] { display: none !important; }
 .review-document-list { max-block-size: min(58vh, 36rem); overflow: auto; scrollbar-gutter: stable; }
+.queue-workbench .review-document-list { max-block-size: none; overflow: visible; scrollbar-gutter: auto; }
+.queue-workbench .intake-brief { padding-block: 16px 8px; }
+.queue-workbench .intake-case-content { padding-block-start: 16px; }
 .evidence-brief { margin-block: 6px 12px; padding: 14px 16px 7px; border: 1px solid #d3e4dc; border-radius: 10px; background: #f7faf8; color: #183c33; min-width: 0; overflow-wrap: anywhere; }
 .evidence-brief header { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .evidence-brief h4 { margin: 0; font-size: 15px; }
@@ -111,8 +114,10 @@
 .triage-disclaimer { color: #566b63; font-size: 12px; }
 
 .triage-citation-row { display: flex; flex-wrap: wrap; gap: 7px; }
-.triage-citation-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 6px; border: 1px solid #b9d7ca; background: #ffffff; color: #115843; font-size: 12px; font-weight: 650; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+.triage-citation-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 6px; border: 1px solid #b9d7ca; background: #ffffff; color: #115843; font-size: 12px; font-weight: 650; cursor: pointer; transition: background 0.15s, border-color 0.15s; box-sizing: border-box; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+.triage-citation-chip > span { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 .triage-citation-chip:hover { background: #e6f4ee; border-color: #146c50; }
+.evidence-brief .evidence-filename { box-sizing: border-box; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 
 .triage-cards-stack { display: grid; gap: 16px; }
 .triage-card { border: 1px solid #cfdfd8; border-radius: 14px; background: #ffffff; padding: 18px; display: grid; gap: 14px; box-shadow: 0 2px 10px rgba(15, 83, 60, 0.04); }
@@ -225,11 +230,22 @@
 .triage-case-footer strong { display: block; font-size: 14px; color: #123e31; }
 .triage-case-footer small { color: #546a62; font-size: 12.5px; }
 
-/* Semi-Transparent Pipeline Processing Overlay */
-.triage-processing-overlay { position: sticky; top: 12px; z-index: 20; padding: 18px; border-radius: 14px; background: rgba(255, 255, 255, 0.92); backdrop-filter: blur(6px); border: 1px solid #9bd4b8; box-shadow: 0 12px 32px rgba(15, 83, 60, 0.14); }
-.triage-processing-card { display: grid; justify-items: center; text-align: center; gap: 10px; padding: 10px; }
-.triage-processing-card h3 { margin: 0; font-size: 17px; color: #0f533c; }
-.triage-processing-card p { margin: 0; font-size: 13.5px; color: #36564c; max-width: 56ch; }
+/* Semi-Transparent Pipeline Processing Overlay & Preparation Canvas */
+.triage-preparing-canvas {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 480px;
+  padding: 48px 24px;
+  background: #ffffff;
+  border-radius: 16px;
+  text-align: center;
+}
+.triage-processing-overlay { position: sticky; top: 12px; z-index: 20; padding: 18px; border-radius: 14px; background: rgba(255, 255, 255, 0.96); backdrop-filter: blur(8px); border: 1px solid #9bd4b8; box-shadow: 0 12px 32px rgba(15, 83, 60, 0.14); }
+.triage-processing-card { display: grid; justify-items: center; text-align: center; gap: 12px; padding: 20px; max-width: 580px; }
+.triage-processing-card h3 { margin: 0; font-size: 19px; color: #0f533c; font-weight: 700; }
+.triage-processing-card p { margin: 0; font-size: 14px; color: #36564c; max-width: 54ch; line-height: 1.5; }
 .triage-processing-steps { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 4px 0; }
 .triage-processing-steps span { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: #eef4f1; color: #546a62; }
 .triage-processing-steps span.is-active { background: #dff3ea; color: #0f533c; }

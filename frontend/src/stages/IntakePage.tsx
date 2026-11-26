@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { HeadingText } from '../HeadingText';
+import { useLayoutEffect, useRef, useState } from 'react';
 import {
   Activity, AlertCircle, ArrowRight, Check, CheckCircle2, ChevronDown,
   ChevronRight, FileText, Inbox, Plus, RefreshCw, Search, Trash2, X,
@@ -8,6 +9,7 @@ import type { EvidenceDocument, IntakeStatus, LogicalDocument } from '../domain/
 import { CasePanel, Status } from './shared';
 import { DocumentReviewAssistant } from './DocumentReviewAssistant';
 import { StageHeading } from './StageHeading';
+import { useQueueRows } from './useQueueRows';
 import { IntakeBrief } from './IntakeBrief';
 import { IntakeImport } from './IntakeImport';
 import { EvidenceBrief, buildEvidenceBrief } from './EvidenceBrief';
@@ -109,7 +111,7 @@ function SourceRow({ document, parent, categories, onRetry, onReclassify, busy, 
       </p>
 
       <details className="intake-excerpts">
-        <summary><ChevronRight size={15} aria-hidden="true" /> Review summary</summary>
+        <summary><ChevronRight size={15} aria-hidden="true" /> <HeadingText>Review summary</HeadingText></summary>
         <EvidenceBrief brief={brief} sourceName={filename} administrative={source?.category === 'va-request' && source.administrativeOnly} />
         {sections && sections.length > 1 && (
         <div style={{ marginTop: '8px' }}>
@@ -133,7 +135,7 @@ function SourceRow({ document, parent, categories, onRetry, onReclassify, busy, 
           </select></label>}
         {result?.error && <p className="intake-source-error">{formatWorkspaceCopy(result.error)}</p>}
         {document.extractedData?.labPanels && document.extractedData.labPanels.length > 0 && (
-          <details className="evidence-disclosure"><summary><ChevronRight size={15} aria-hidden="true" />Laboratory results ({document.extractedData.labPanels.length} {document.extractedData.labPanels.length === 1 ? 'panel' : 'panels'})</summary>
+          <details className="evidence-disclosure"><summary><ChevronRight size={15} aria-hidden="true" /><HeadingText>Laboratory results</HeadingText> ({document.extractedData.labPanels.length} {document.extractedData.labPanels.length === 1 ? 'panel' : 'panels'})</summary>
             <div className="intake-lab-findings evidence-reader" role="region" tabIndex={0} aria-label={`Laboratory results for ${brief.title}`}>
             {document.extractedData.labPanels.map((panel, idx) => (
               <div key={idx} className="intake-lab-panel">
@@ -144,11 +146,11 @@ function SourceRow({ document, parent, categories, onRetry, onReclassify, busy, 
                 <table className="intake-lab-table">
                   <thead>
                     <tr>
-                      <th>Test Name</th>
-                      <th>Result</th>
-                      <th>Units</th>
-                      <th>Reference Range</th>
-                      <th>Status</th>
+                      <th><HeadingText>Test Name</HeadingText></th>
+                      <th><HeadingText>Result</HeadingText></th>
+                      <th><HeadingText>Units</HeadingText></th>
+                      <th><HeadingText>Reference Range</HeadingText></th>
+                      <th><HeadingText>Status</HeadingText></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -198,17 +200,12 @@ export function IntakePage(props: IntakeProps) {
   const [processing, setProcessing] = useState(false);
   const [receiptReferences, setReceiptReferences] = useState<Record<string, string>>({});
   const caseHeading = useRef<HTMLHeadingElement>(null);
-  const queueList = useRef<HTMLUListElement>(null);
+  const queueList = useQueueRows(selectedId, mobileQueueOpen, `${intakeStatus}:${activeFilter}:${query}`);
 
-  useEffect(() => {
-    const list = queueList.current;
-    const active = list?.querySelector('button[aria-pressed="true"]');
-    if (!list?.clientHeight || !active) return;
-    const viewport = list.getBoundingClientRect();
-    const row = active.getBoundingClientRect();
-    if (row.top < viewport.top) list.scrollTop += row.top - viewport.top;
-    if (row.bottom > viewport.bottom) list.scrollTop += row.bottom - viewport.bottom;
-  }, [selectedId, mobileQueueOpen, query, intakeStatus, activeFilter]);
+  useLayoutEffect(() => {
+    setSection('documents');
+    setSelectedCategory('all');
+  }, [selectedId]);
 
   if (!state) return null;
 
@@ -265,8 +262,6 @@ export function IntakePage(props: IntakeProps) {
   }
 
   function pickCase(id: string) {
-    setSection('documents');
-    setSelectedCategory('all');
     onSelect(id);
     if (mobileQueueOpen) {
       setMobileQueueOpen(false);
@@ -287,7 +282,7 @@ export function IntakePage(props: IntakeProps) {
     }
   }
 
-  return <div className="intake-page">
+  return <div className={importTarget ? 'intake-page' : 'intake-page queue-workbench'}>
     <StageHeading stage="Intake" description="Receive exam requests and review source documents before triage.">
       {!importTarget && <button type="button" id="intake-new-request" className="intake-primary intake-new-esr" onClick={event => openImport(event.currentTarget, { type: 'esr' })}><Plus size={19} /> New ESR</button>}
     </StageHeading>
@@ -296,10 +291,10 @@ export function IntakePage(props: IntakeProps) {
       <aside className="intake-queue-card" aria-label="Intake queue">
         <button type="button" className="intake-queue-toggle" aria-expanded={mobileQueueOpen || !selected}
           aria-controls="intake-queue-controls" disabled={!selected} onClick={() => setMobileQueueOpen(value => !value)}>
-          <Inbox size={18} /><span>Intake queue</span><small>{esrs.length} {esrs.length === 1 ? 'case' : 'cases'}</small><ChevronDown size={17} />
+          <Inbox size={18} /><span><HeadingText>Intake queue</HeadingText></span><small>{esrs.length} {esrs.length === 1 ? 'case' : 'cases'}</small><ChevronDown size={17} />
         </button>
         <div id="intake-queue-controls" className={`intake-queue-controls${mobileQueueOpen || !selected ? ' is-open' : ''}`}>
-          <header className="intake-queue-heading"><h2>Intake queue</h2><span>{esrs.length} {esrs.length === 1 ? 'case' : 'cases'}</span></header>
+          <header className="intake-queue-heading"><h2><HeadingText>Intake queue</HeadingText></h2><span>{esrs.length} {esrs.length === 1 ? 'case' : 'cases'}</span></header>
           <div className="intake-queue-toolbar">
             <label className="intake-search"><Search size={17} aria-hidden="true" /><input value={query}
               aria-label="Search Intake cases" placeholder="Search ESR or claimant"
@@ -337,7 +332,8 @@ export function IntakePage(props: IntakeProps) {
         </div>
       </aside>
 
-      {selected && view && caseItem ? <section className="intake-case-card" aria-labelledby="intake-case-title">
+      {selected && view && caseItem ? <div className="intake-case-card" key={selected.id}>
+        <section className="queue-detail" aria-labelledby="intake-case-title" tabIndex={0}>
         <header className="intake-case-header">
           <span className="intake-case-avatar" aria-hidden="true">{caseItem.initials}</span>
           <div className="intake-case-identity">
@@ -359,7 +355,7 @@ export function IntakePage(props: IntakeProps) {
           })}</ol>
         </div>
 
-        <IntakeBrief key={selected.id} view={view} onExceptions={() => setSection('exceptions')} />
+        <IntakeBrief view={view} onExceptions={() => setSection('exceptions')} />
 
         <div className="intake-sections" role="group" aria-label="Case sections">
           {sections.map(({ key, label, icon: Icon }) => <button type="button" key={key} aria-pressed={section === key} onClick={() => setSection(key)}>
@@ -373,7 +369,7 @@ export function IntakePage(props: IntakeProps) {
           <div hidden={section !== 'documents'}>
             <div className="intake-content-heading">
               <div>
-                <h3>Evidence library</h3>
+                <h3><HeadingText>Evidence library</HeadingText></h3>
                 <p>
                   {medicalItems.length} {medicalItems.length === 1 ? 'report' : 'reports'} · {medicalItems.reduce((sum, item) => sum + item.pageCount, 0)} pages
                   {view.unreadablePages > 0 && ` · ${view.unreadablePages} unreadable pages`}
@@ -391,7 +387,7 @@ export function IntakePage(props: IntakeProps) {
               </select></label>}
 
             {filteredMedicalDocuments.length ? (
-              <ul className="intake-sources review-document-list" tabIndex={0} aria-label="Evidence library documents">
+              <ul className="intake-sources review-document-list" aria-label="Evidence library documents">
                 {filteredMedicalDocuments.map(item => (
                   <SourceRow
                     key={item.id}
@@ -407,7 +403,7 @@ export function IntakePage(props: IntakeProps) {
               <div className="intake-empty-evidence-box">
                 <FileText size={28} className="intake-empty-evidence-icon" />
                 <div className="intake-empty-evidence-text">
-                  <h4>No supporting evidence yet</h4>
+                  <h4><HeadingText>No supporting evidence yet</HeadingText></h4>
                   <p>
                     {metadataDocuments.length > 0
                       ? 'Request metadata is on file. Attach supporting records before handoff.'
@@ -427,16 +423,16 @@ export function IntakePage(props: IntakeProps) {
               </div>
             )}
             {(logicalMetadataDocs.length > 0 || metadataDocuments.length > 0) && <details className="intake-subdetails intake-metadata-details">
-              <summary><ChevronRight size={16} />Request metadata ({logicalMetadataDocs.length || metadataDocuments.length})</summary>
-              <ul className="intake-sources review-document-list" tabIndex={0} aria-label="Request metadata documents">{(logicalMetadataDocs.length ? logicalMetadataDocs : metadataDocuments).map(doc => <SourceRow key={doc.id} document={doc} parent={'parentDocumentId' in doc ? state.evidenceDocumentsById[doc.parentDocumentId] : undefined} categories={categories} busy={processing} />)}</ul>
+              <summary><ChevronRight size={16} /><HeadingText>Request metadata</HeadingText> ({logicalMetadataDocs.length || metadataDocuments.length})</summary>
+              <ul className="intake-sources review-document-list" aria-label="Request metadata documents">{(logicalMetadataDocs.length ? logicalMetadataDocs : metadataDocuments).map(doc => <SourceRow key={doc.id} document={doc} parent={'parentDocumentId' in doc ? state.evidenceDocumentsById[doc.parentDocumentId] : undefined} categories={categories} busy={processing} />)}</ul>
             </details>}
             {view.canProcessLegacy && <button type="button" className="intake-text-action" disabled={processing}
               onClick={() => { void run(completeDocumentProcessing(selected.id)); }}><RefreshCw size={15} /> Update document status</button>}
-            <DocumentReviewAssistant key={selected.id} esrId={selected.id} />
+            <DocumentReviewAssistant esrId={selected.id} />
           </div>
 
           {section === 'exceptions' && <>
-            <div className="intake-content-heading"><div><h3>Exceptions</h3><p>{view.openExceptions} open · {view.escalatedExceptions} escalated</p></div></div>
+            <div className="intake-content-heading"><div><h3><HeadingText>Exceptions</HeadingText></h3><p>{view.openExceptions} open · {view.escalatedExceptions} escalated</p></div></div>
             {exceptions.length === 0 && <p className="intake-inline-empty">No exceptions recorded for this ESR.</p>}
             <div className="intake-issues">{exceptions.map(issue => {
               const note = reviewNotes[issue.id] ?? '';
@@ -482,7 +478,7 @@ export function IntakePage(props: IntakeProps) {
           </>}
 
           {section === 'activity' && <>
-            <div className="intake-content-heading"><div><h3>Recent activity</h3>
+            <div className="intake-content-heading"><div><h3><HeadingText>Recent activity</HeadingText></h3>
               <p>{view.receiptReady ? 'Receipt acknowledged' : 'Acknowledgement pending'}
                 {view.receiptReady && selected.receiptReference && <> · {selected.receiptReference.replace(/^LOCAL-(?=(?:AEP|ESR)-)/i, '')}</>}
               </p></div>
@@ -492,10 +488,11 @@ export function IntakePage(props: IntakeProps) {
               <b>{formatActivityLabel(event.action)}</b><time dateTime={event.at}>{dateLabel(event.at)}</time>
               {event.rationale && <p>{formatWorkspaceCopy(event.rationale)}</p>}
             </div></li>)}</ol> : <p className="intake-inline-empty">No activity recorded for this ESR.</p>}
-            <details className="intake-subdetails"><summary><ChevronRight size={16} /> Case details</summary><CasePanel item={caseItem} stage="Intake" state={state} /></details>
+            <details className="intake-subdetails"><summary><ChevronRight size={16} /> <HeadingText>Case details</HeadingText></summary><CasePanel item={caseItem} stage="Intake" state={state} /></details>
           </>}
         </div>
 
+        </section>
         <footer className="intake-case-footer">
           <div className="intake-readiness" data-ready={view.canValidate} role="status">
             {view.canValidate ? <CheckCircle2 size={19} /> : <AlertCircle size={19} />}
@@ -510,7 +507,7 @@ export function IntakePage(props: IntakeProps) {
             {processing ? 'Saving…' : 'Validate and send to Triage'}<ArrowRight size={17} />
           </button>}
         </footer>
-      </section> : <section className="intake-case-empty"><Inbox size={28} /><h2>No case selected</h2><p>Choose a case from the queue or receive a new ESR.</p></section>}
+      </div> : <section className="intake-case-empty"><Inbox size={28} /><h2><HeadingText>No case selected</HeadingText></h2><p>Choose a case from the queue or receive a new ESR.</p></section>}
     </div>}
   </div>;
 }
