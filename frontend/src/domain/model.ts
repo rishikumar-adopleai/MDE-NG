@@ -30,8 +30,8 @@ export type WorkItemEntityType =
 
 export type IntakeStatus = 'new' | 'acknowledgement-pending' | 'processing' | 'requires-attention' | 'ready-for-triage' | 'completed';
 export type ContentionStatus = 'awaiting-review' | 'in-review' | 'clarification-required' | 'approved-for-exam' | 'completed';
-export type SimulatedContentionDisposition = 'pending' | 'accepted' | 'cancelled' | 'new-exam-requested';
-export type ExaminationRequirementStatus = 'proposed' | 'awaiting-review' | 'approved' | 'clarification-required' | 'completed';
+export type SimulatedContentionDisposition = 'pending' | 'accepted' | 'cancelled' | 'new-exam-requested' | 'rap-delivered' | 'rework-requested';
+export type ExaminationRequirementStatus = 'proposed' | 'awaiting-review' | 'approved' | 'scheduled' | 'clarification-required' | 'completed' | 'superseded-by-evidence-revision' | 'cancelled';
 export type ExaminationStatus = 'awaiting-scheduling' | 'scheduled' | 'in-progress' | 'awaiting-clinical-review' | 'correction-required' | 'ready-for-qa' | 'completed' | 'cancelled';
 export type AppointmentStatus = 'held' | 'confirmed-locally' | 'reschedule-requested' | 'cancelled' | 'completed' | 'no-show';
 export type DbqStatus = 'draft' | 'in-progress' | 'awaiting-clinician-review' | 'correction-required' | 'ready-for-qa' | 'in-qa' | 'approved-for-package';
@@ -41,8 +41,8 @@ export type QaFindingSeverity = 'blocking' | 'review' | 'advisory';
 export type QaFindingStatus = 'open' | 'correction-requested' | 'resolved' | 'accepted-with-rationale';
 export type CorrectionRequestStatus = 'open' | 'in-progress' | 'resubmitted' | 'closed';
 export type ResultsPackageStatus = 'draft' | 'validating' | 'ready-for-review' | 'prepared-locally' | 'blocked' | 'closed';
-export type SimulatedDeliveryResponse = 'not-sent' | 'awaiting-response' | 'accepted' | 'report-fix' | 'new-exam-requested';
-export type DeliveryEventType = 'package-created' | 'validation-completed' | 'authorized-review-recorded' | 'external-action-blocked' | 'reconciliation-task-created' | 'reconciliation-task-completed' | 'staff-reconciliation-recorded' | 'simulated-transmission' | 'simulated-response' | 'contention-cancelled' | 'esr-closed';
+export type SimulatedDeliveryResponse = 'not-sent' | 'awaiting-response' | 'accepted' | 'report-fix' | 'new-exam-requested' | 'rework-esr-issued';
+export type DeliveryEventType = 'package-created' | 'validation-completed' | 'authorized-review-recorded' | 'external-action-blocked' | 'reconciliation-task-created' | 'reconciliation-task-completed' | 'staff-reconciliation-recorded' | 'simulated-transmission' | 'simulated-response' | 'contention-cancelled' | 'esr-closed' | 'document-uploaded' | 'document-upload-failed' | 'rap-transmitted' | 'rap-transmission-failed' | 'rap-receipt-confirmed' | 'rework-esr-received' | 'rework-esr-acknowledged' | 'rework-esr-assessed' | 'rework-routed-clinical' | 'rework-routed-technical' | 'rework-deferred-exam' | 'rework-clarification-pending';
 export type AiInsightDecision = 'pending' | 'accepted-for-human-review' | 'rejected' | 'dismissed';
 export type ActivityAction =
   | 'esr-received'
@@ -87,7 +87,12 @@ export type ActivityAction =
   | 'simulated-contention-cancelled'
   | 'esr-closed'
   | 'reconciliation-task-created'
-  | 'assistance-disposition-recorded';
+  | 'assistance-disposition-recorded'
+  | 'document-upload-recorded'
+  | 'rap-transmitted'
+  | 'rework-esr-received'
+  | 'rework-esr-assessed'
+  | 'rework-root-cause-updated';
 
 export type FieldValue = string | number | boolean | null;
 export type FieldValues = Record<string, FieldValue>;
@@ -115,6 +120,27 @@ export interface Veteran extends VersionedEntity {
   representativeReference?: string;
 }
 
+export interface ReworkDetails {
+  originalEsrId: EntityId;
+  affectedContentionIds: EntityId[];
+  reworkContentionIds: EntityId[];
+  affectedDbqIds: EntityId[];
+  submittedRevisionIds: Record<EntityId, EntityId>;
+  previousPackageId?: EntityId;
+  reworkSequence: number;
+  reworkCategory: 'insufficient' | 'clarification' | 'both';
+  vaSpecialInstructions: string;
+  requestReceivedAt: string;
+  acknowledgedAt?: string;
+  assessmentStatus: 'pending-assessment' | 'assessed';
+  reworkRoute?: 'report-correction' | 'additional-exam-deferred' | 'technical-delivery-issue' | 'pending-clarification';
+  assessmentNote?: string;
+  assessedBy?: EntityId;
+  assessedAt?: string;
+  clarificationRequestNote?: string;
+  reworkRequestKey?: string;
+}
+
 export interface ESR extends VersionedEntity {
   practiceScenario?: { cohort: string; requestReference: string; sourceFile: string; name?: string; exercise?: string };
   veteranId: EntityId;
@@ -134,6 +160,21 @@ export interface ESR extends VersionedEntity {
   workflowDisposition?: 'completed' | 'cancelled';
   closureNote?: string;
   schedulingProgram?: 'IDES' | 'BDD';
+  isSimulated?: boolean;
+  esrType?: 'original' | 'rework';
+  linkedOriginalEsrId?: EntityId;
+  childReworkEsrIds?: EntityId[];
+  esrCompletionStatus?: 'pending' | 'completed' | 'cancelled';
+  reworkDetails?: ReworkDetails;
+  stageTimestamps?: {
+    intakeReceivedAt?: string;
+    triageCompletedAt?: string;
+    examCompletedAt?: string;
+    qaApprovedAt?: string;
+    deliveryPreparedAt?: string;
+    deliveredAt?: string;
+    closedAt?: string;
+  };
 }
 
 export interface Contention extends VersionedEntity {
@@ -184,6 +225,7 @@ export interface Appointment extends VersionedEntity {
   esrId: EntityId;
   examinationId: EntityId;
   examinerId: EntityId;
+  examinerName?: string;
   facilityId: EntityId;
   startsAt: string;
   endsAt: string;
@@ -344,6 +386,11 @@ export interface DiagnosticResult extends VersionedEntity {
   reportedFlag?: DiagnosticReportedFlag;
   reviewedBy?: EntityId;
   containsRestrictedRawMaterial?: boolean;
+  classificationUncertain?: boolean;
+  privacyQuarantined?: boolean;
+  quarantineStorage?: string;
+  quarantineRetentionYears?: number;
+  quarantinedAt?: string;
   reviewedAt?: string;
 }
 
@@ -423,6 +470,7 @@ export interface EvidenceExcerpt {
 export interface IntakeException extends VersionedEntity {
   esrId: EntityId;
   documentId?: EntityId;
+  duplicateOfDocumentId?: EntityId;
   kind: 'unreadable-pages' | 'duplicate-document' | 'possible-duplicate' | 'missing-document' | 'metadata-incomplete';
   title: string;
   detail: string;
@@ -454,6 +502,66 @@ export interface OutreachAttempt extends VersionedEntity {
   actorId: EntityId;
 }
 
+export interface QAQuarantinedFile {
+  id: string;
+  sourceReference: string;
+  reason: string;
+  retentionYears: number;
+}
+
+export interface QAAuditCitedSource {
+  sourceId: string;
+  documentId: string;
+  documentTitle: string;
+  pageNumber: number;
+  citationLabel: string;
+  excerpt: string;
+}
+
+export interface EvidenceCoverageSummary {
+  availableCount: number;
+  processedCount: number;
+  relevantToExamCount: number;
+  deterministicReviewedCount: number;
+  aiReviewedCount: number;
+  humanInspectionRequiredCount: number;
+  unavailableOrUnreadableCount: number;
+  batchesPlanned: number;
+  batchesSucceeded: number;
+  completeCoverage: boolean;
+  computedAt?: string;
+}
+
+export interface QAAuditSummary {
+  versionId: EntityId;
+  status?: 'completed' | 'partial' | 'failed' | 'pending';
+  mode?: string;
+  summary: string;
+  provider?: string | null;
+  fallbackUsed?: boolean;
+  promptVersion?: string;
+  evaluatedAt: string;
+  aiAttempted?: boolean;
+  warningCount?: number;
+  batchesPlanned?: number;
+  batchesSucceeded?: number;
+  manualReviewRequired?: boolean;
+  errorSummary?: string;
+  evidenceDigest?: string;
+  citedSources?: QAAuditCitedSource[];
+}
+
+export interface QAProcessingState {
+  status: 'queued' | 'processing' | 'completed' | 'failed';
+  queuedAt?: string;
+  completedAt?: string;
+  versionId?: EntityId;
+  ruleCount?: number;
+  failedRuleCount?: number;
+  aiWarningCount?: number;
+  error?: string;
+}
+
 export interface QAReview extends VersionedEntity {
   esrId: EntityId;
   dbqId: EntityId;
@@ -464,12 +572,44 @@ export interface QAReview extends VersionedEntity {
   reviewerComment: string;
   approvedAt?: string;
   checks?: QAValidationCheck[];
+  isVaReportFix?: boolean;
+  vaFixNote?: string;
+  quarantinedPrivacyFiles?: QAQuarantinedFile[];
+  aiAudit?: QAAuditSummary;
+  evidenceCoverage?: EvidenceCoverageSummary;
+  ruleVersion?: string;
+  evidenceDigest?: string;
+  approvedEvidenceDigest?: string;
+  isStale?: boolean;
+  staleReason?: string;
+  staleAt?: string;
+  manualAiOverride?: { confirmed: boolean; note: string; actorId?: string; at?: string };
+  qaProcessing?: QAProcessingState;
 }
 
 export interface QAValidationCheck {
-  key: 'required-fields' | 'clinician-signoff' | 'evidence-linkage' | 'form-version' | 'diagnostics';
+  ruleId?: string;
+  key:
+    | 'required-fields'
+    | 'clinician-signoff'
+    | 'evidence-linkage'
+    | 'form-version'
+    | 'diagnostics'
+    | 'doctor-credentials'
+    | 'forbidden-words'
+    | 'privacy-raw-psych'
+    | 'labs-safety-24h'
+    | 'ace-remarks'
+    | 'veteran-esr-identity'
+    | 'dbq-scope-bva';
   label: string;
-  status: 'passed' | 'failed';
+  contractReference?: string;
+  ruleVersion?: string;
+  dbqId?: EntityId;
+  affectedSection?: string;
+  supportingEvidenceIds?: string[];
+  recommendedAction?: string;
+  status: 'passed' | 'failed' | 'not-applicable' | 'unable-to-verify' | 'human-review-required';
   severity: QaFindingSeverity;
   detail: string;
   versionId: EntityId;
@@ -480,16 +620,21 @@ export interface QAFinding extends VersionedEntity {
   esrId: EntityId;
   qaReviewId: EntityId;
   dbqId: EntityId;
+  ruleId?: string;
+  ruleVersion?: string;
+  contractReference?: string;
   sectionReference: string;
-  issueCategory: 'missing-required-field' | 'incomplete-rationale' | 'form-version' | 'signature-readiness' | 'evidence-consistency' | 'attachment';
+  issueCategory: 'missing-required-field' | 'incomplete-rationale' | 'form-version' | 'signature-readiness' | 'evidence-consistency' | 'attachment' | 'clinical-contradiction' | 'missing-evidence' | 'missing-signature' | 'forbidden-content' | 'diagnostic-gap' | 'safety-24h' | 'ace-remarks' | 'credentials' | 'advisory';
   severity: QaFindingSeverity;
   title: string;
   supportingEvidenceIds: EntityId[];
+  sourceIds?: string[];
+  citedSources?: QAAuditCitedSource[];
   reviewerId: EntityId;
   status: QaFindingStatus;
   comments: string[];
   resolutionHistory: QaResolutionEntry[];
-  origin?: 'deterministic' | 'reviewer';
+  origin?: 'deterministic' | 'reviewer' | 'ai-audit';
   checkKey?: QAValidationCheck['key'];
   versionId?: EntityId;
 }
@@ -513,6 +658,30 @@ export interface CorrectionRequest extends VersionedEntity {
   history: { at: string; status: CorrectionRequestStatus; note: string; actorId: EntityId }[];
 }
 
+export interface ContentionDeliveryRecord {
+  contentionId: EntityId;
+  dbqIds: EntityId[];
+  revisionIds: Record<EntityId, EntityId>;
+  approvalIds: Record<EntityId, EntityId>;
+  diagnosticResultIds: EntityId[];
+  evidenceDigest?: string;
+  rulesVersion?: string;
+  uploadedDocumentKeys: string[];
+  documentUploadStatus: 'not-uploaded' | 'uploaded' | 'failed';
+  rapTransmissionStatus: 'not-sent' | 'sent' | 'failed';
+  receiptConfirmationStatus: 'pending' | 'confirmed' | 'failed';
+  vaReviewOutcome: 'pending' | 'accepted' | 'rework-requested' | 'cancelled';
+  reconciliationStatus: 'pending' | 'reconciled' | 'discrepancy';
+  lastError?: string;
+  uploadAttempts: number;
+  rapAttempts: number;
+  documentUploadedAt?: string;
+  rapSentAt?: string;
+  receiptConfirmedAt?: string;
+  vaOutcomeAt?: string;
+  immutableLockedAt?: string;
+}
+
 export interface ResultsPackage extends VersionedEntity {
   esrId: EntityId;
   dbqIds: EntityId[];
@@ -527,19 +696,77 @@ export interface ResultsPackage extends VersionedEntity {
   simulatedResponseNote?: string;
   preparedManifest?: PackageManifest;
   submissions?: PackageSubmission[];
+  contentionDeliveries?: Record<EntityId, ContentionDeliveryRecord>;
+  uploadedDocumentKeys?: string[];
+  isStale?: boolean;
+  staleReason?: string;
+  evidenceDigest?: string;
+  rulesVersion?: string;
+  esrCompletionStatus?: 'pending' | 'completed' | 'cancelled';
 }
 
 export interface PackageManifest {
   contentions: EntityId[];
   reports: { dbqId: EntityId; revisionId: EntityId; approvalId: EntityId }[];
   diagnosticResultIds: EntityId[];
+  rulesVersion?: string;
+  evidenceDigest?: string;
 }
 
 export interface PackageSubmission {
   sequence: number;
   manifest: PackageManifest;
   openedAt: string;
+  contentionIds?: EntityId[];
+  documentUploadStatus?: 'not-uploaded' | 'uploaded' | 'failed';
+  rapTransmissionStatus?: 'not-sent' | 'sent' | 'failed';
+  receiptConfirmationStatus?: 'pending' | 'confirmed' | 'failed';
+  immutableSnapshotHash?: string;
   response?: { kind: Exclude<SimulatedDeliveryResponse, 'not-sent' | 'awaiting-response'>; details: string; targetId?: EntityId; at: string };
+}
+
+export interface ReworkAnalyticsRecord extends VersionedEntity {
+  esrId: EntityId;
+  originalEsrId: EntityId;
+  packageId?: EntityId;
+  affectedContentionIds: EntityId[];
+  affectedDbqIds: EntityId[];
+  dbqFormTypes: string[];
+  vaReworkReason: string;
+  reworkCategory: 'insufficient' | 'clarification' | 'both';
+  deficiencyCategory:
+    | 'missing-measurement'
+    | 'incomplete-rationale'
+    | 'contradictory-findings'
+    | 'missing-diagnostic'
+    | 'technical-upload'
+    | 'unclear-instructions'
+    | 'other';
+  responsibleStage:
+    | 'Intake'
+    | 'Medical Triage'
+    | 'Scheduling'
+    | 'Clinical Evaluation'
+    | 'Internal QA'
+    | 'VA Delivery & Review'
+    | 'External VA'
+    | 'Pending Assessment';
+  correctiveAction: string;
+  resolutionOutcome: 'pending' | 'resolved-accepted' | 'rework-again' | 'deferred';
+  aiSuggestion?: {
+    suggestedDeficiencyCategory: string;
+    suggestedResponsibleStage: string;
+    recommendation: string;
+    advisoryOnly: true;
+  };
+}
+
+export interface ReconciliationFinding {
+  id: string;
+  kind: 'missing-result' | 'duplicate-submission' | 'status-mismatch' | 'unresolved-rework' | 'cancellation-discrepancy';
+  severity: 'blocking' | 'warning';
+  detail: string;
+  contentionId?: EntityId;
 }
 
 export interface DeliveryEvent extends VersionedEntity {
@@ -631,6 +858,7 @@ export interface WorkspaceState {
   correctionRequestsById: EntityMap<CorrectionRequest>;
   resultsPackagesById: EntityMap<ResultsPackage>;
   deliveryEventsById: EntityMap<DeliveryEvent>;
+  reworkAnalyticsById?: EntityMap<ReworkAnalyticsRecord>;
   aiInsightsById: EntityMap<AIInsight>;
   workItemsById: EntityMap<WorkItem>;
   activitiesById: EntityMap<ActivityEvent>;

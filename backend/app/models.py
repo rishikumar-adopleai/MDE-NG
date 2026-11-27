@@ -202,3 +202,33 @@ class Stage2ProcessingAudit(Base):
     fallback_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     audit_json: Mapped[dict[str, Any]] = mapped_column(JsonType, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+
+class Stage5QAAuditJob(Base):
+    __tablename__ = "stage5_qa_audit_jobs"
+    __table_args__ = (Index("ix_stage5_qa_jobs_review_status", "review_id", "status"),)
+
+    job_id: Mapped[str] = mapped_column(String(80), primary_key=True, default=lambda: str(uuid4()))
+    review_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    dbq_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    version_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    evidence_digest: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+    worker_lease: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
+
+
+class Stage6DeliveryOperation(Base):
+    __tablename__ = "stage6_delivery_operations"
+    __table_args__ = (Index("ix_stage6_op_kind_key", "operation_kind", "idempotency_key", unique=True),)
+
+    operation_id: Mapped[str] = mapped_column(String(80), primary_key=True, default=lambda: str(uuid4()))
+    esr_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    operation_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="completed")
+    result_summary: Mapped[dict[str, Any]] = mapped_column(JsonType, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)

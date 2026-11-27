@@ -44,6 +44,8 @@ COMMAND_ROLES = {
     **dict.fromkeys(("ensureResultsPackage", "validateResultsPackage", "prepareResultsPackage",
                      "createReconciliationTask", "completeReconciliationTask", "recordDeliveryReview", "simulatePackageTransmission",
                      "recordSimulatedPackageResponse", "recordSimulatedContentionCancellation",
+                     "uploadContentionDocuments", "sendContentionRap", "createLinkedReworkESR",
+                     "assessReworkESR", "updateReworkRootCause",
                      "closeESR"), "delivery"),
     "decideInsight": "admin",
 }
@@ -197,6 +199,46 @@ def apply_command(
     if body.revision != state["revision"]:
         raise HTTPException(409, "The workspace changed. Review the latest records and retry.")
 
+    if body.action in {"requestCorrection", "resolveQAFinding", "approveQAReview", "runQAChecklist"} and body.args and isinstance(body.args[0], str):
+        from app.services.qa_rules import check_independent_qa_reviewer, enforce_backend_qa_approval
+        target_id = body.args[0]
+        if body.action in {"requestCorrection", "resolveQAFinding"}:
+            finding_obj = (state.get("qaFindingsById") or {}).get(target_id) or {}
+            review_obj = (state.get("qaReviewsById") or {}).get(finding_obj.get("qaReviewId") or "")
+        else:
+            review_obj = (state.get("qaReviewsById") or {}).get(target_id)
+        if review_obj:
+            check_independent_qa_reviewer(state, review_obj, user.user_id, user.role)
+        if body.action == "resolveQAFinding" and finding_obj.get("origin") == "deterministic":
+            ck = finding_obj.get("checkKey")
+            chk = next((c for c in (review_obj or {}).get("checks") or [] if c.get("key") == ck), None)
+            if chk and chk.get("status") == "failed":
+                raise HTTPException(
+                    422,
+                    f"Cannot manually resolve failed deterministic rule '{chk.get('ruleId') or ck}'. Return DBQ to Stage 4 or fix the underlying deficiency first.",
+                )
+        if body.action == "approveQAReview":
+            note_arg = str(body.args[1]) if len(body.args) > 1 and isinstance(body.args[1], str) else ""
+            override_arg = body.args[2] if len(body.args) > 2 else False
+            approval_meta = enforce_backend_qa_approval(
+                db, state, target_id, user.user_id, user.role, note_arg, override_arg
+            )
+        else:
+            approval_meta = None
+    else:
+        approval_meta = None
+
+    STAGE6_GUARDED_ACTIONS = {
+        "validateResultsPackage", "prepareResultsPackage", "simulatePackageTransmission",
+        "uploadContentionDocuments", "sendContentionRap", "createLinkedReworkESR",
+        "assessReworkESR", "updateReworkRootCause", "closeESR",
+    }
+    if body.action in STAGE6_GUARDED_ACTIONS:
+        from app.services.qa_rules import enforce_backend_stage6_delivery
+        stage6_meta = enforce_backend_stage6_delivery(db, state, body.action, body.args, user.user_id, user.role)
+    else:
+        stage6_meta = {}
+
     if body.action in INTAKE_COMMANDS:
         outcome = apply_intake_command(state, body.action, body.args, user.user_id)
     elif body.action in TRIAGE_COMMANDS:
@@ -228,7 +270,95 @@ def apply_command(
             force=True,
             evidence_digest=compute_current_esr_digest(next_state, esr_id),
         )
+    elif body.action == "completeClinicalReview" and body.args and isinstance(body.args[0], str):
+        from app.services.qa_pipeline import enqueue_qa_audit_job
+        dbq_id = body.args[0]
+        qa_review = next(
+            (r for r in (next_state.get("qaReviewsById") or {}).values() if r.get("dbqId") == dbq_id),
+            None,
+        )
+        if qa_review:
+            qa_review["qaProcessing"] = {"status": "queued", "queuedAt": timestamp(), "versionId": qa_review.get("versionId")}
+            enqueue_qa_audit_job(db, qa_review["id"], force=True)
+    elif body.action == "recordSimulatedPackageResponse" and len(body.args) >= 4 and body.args[1] == "report-fix" and isinstance(body.args[3], str):
+        from app.services.qa_pipeline import enqueue_qa_audit_job
+        dbq_id = body.args[3]
+        qa_review = next(
+            (r for r in (next_state.get("qaReviewsById") or {}).values() if r.get("dbqId") == dbq_id),
+            None,
+        )
+        if qa_review:
+            qa_review["qaProcessing"] = {"status": "queued", "queuedAt": timestamp(), "versionId": qa_review.get("versionId")}
+            enqueue_qa_audit_job(db, qa_review["id"], force=True)
+    elif body.action == "runQAChecklist" and body.args and isinstance(body.args[0], str):
+        from app.services.qa_pipeline import record_qa_audit_event
+        from app.services.qa_rules import run_deterministic_qa_rules
+        review_id = body.args[0]
+        if review_id in (next_state.get("qaReviewsById") or {}):
+            res = run_deterministic_qa_rules(db, next_state, review_id)
+            record_qa_audit_event(db, user.user_id, "qa-checklist-run", review_id, {
+                "reviewId": review_id, "failedCount": res["failedCount"], "ruleVersion": res["ruleVersion"],
+            })
+    elif body.action == "approveQAReview" and body.args and isinstance(body.args[0], str):
+        from app.services.qa_pipeline import record_qa_audit_event
+        from app.services.qa_rules import compute_qa_evidence_digest
+        review_id = body.args[0]
+        approved_rev = (next_state.get("qaReviewsById") or {}).get(review_id)
+        final_digest = compute_qa_evidence_digest(next_state, review_id) or (approval_meta or {}).get("evidenceDigest")
+        if approved_rev and approval_meta:
+            approved_rev["evidenceDigest"] = final_digest
+            approved_rev["approvedEvidenceDigest"] = final_digest
+            approved_rev["ruleVersion"] = approval_meta["ruleVersion"]
+            approved_rev["isStale"] = False
+            if isinstance(review_obj, dict) and review_obj.get("manualAiOverride"):
+                approved_rev["manualAiOverride"] = review_obj["manualAiOverride"]
+        record_qa_audit_event(db, user.user_id, "qa-review-approved", review_id, {
+            "reviewId": review_id,
+            "dbqId": (approved_rev or {}).get("dbqId"),
+            "versionId": (approved_rev or {}).get("versionId"),
+            "evidenceDigest": final_digest,
+            "ruleVersion": (approval_meta or {}).get("ruleVersion"),
+            "manualAiOverride": bool((approval_meta or {}).get("manualAiOverride")),
+        })
+    elif body.action in {"requestCorrection", "addQAFinding", "resolveQAFinding"} and body.args and isinstance(body.args[0], str):
+        from app.services.qa_pipeline import record_qa_audit_event
+        record_qa_audit_event(db, user.user_id, f"qa-{body.action}", body.args[0], {"targetId": body.args[0]})
+    elif body.action in {"recordDiagnosticResult", "recordDiagnosticException"} and body.args and isinstance(body.args[0], str):
+        from app.services.qa_rules import invalidate_stale_qa_reviews
+        order = (next_state.get("diagnosticOrdersById") or {}).get(body.args[0]) or {}
+        exam = (next_state.get("examinationsById") or {}).get(order.get("examinationId") or "") or {}
+        if order.get("esrId") and exam.get("requiredDbqIds"):
+            invalidate_stale_qa_reviews(
+                next_state,
+                order["esrId"],
+                timestamp(),
+                f"Diagnostic order '{order.get('testName', order.get('id'))}' updated.",
+                affected_dbq_ids=set(exam.get("requiredDbqIds") or []),
+            )
     save_next_state(db, body.revision, next_state)
+    if body.action in {
+        "ensureResultsPackage", "validateResultsPackage", "prepareResultsPackage",
+        "uploadContentionDocuments", "sendContentionRap", "createLinkedReworkESR",
+        "assessReworkESR", "updateReworkRootCause", "closeESR",
+    }:
+        from app.models import Stage6DeliveryOperation
+        from app.services.qa_pipeline import record_qa_audit_event
+        ref = str(body.args[0]) if body.args else "stage6"
+        if stage6_meta.get("dbOpKind") and stage6_meta.get("dbOpKey"):
+            db.add(Stage6DeliveryOperation(
+                esr_id=str(stage6_meta.get("esrId") or ref)[:80],
+                operation_kind=str(stage6_meta["dbOpKind"])[:64],
+                idempotency_key=str(stage6_meta["dbOpKey"])[:160],
+                status="completed",
+                result_summary={"action": body.action, "actorId": user.user_id},
+            ))
+        record_qa_audit_event(
+            db,
+            user.user_id,
+            f"stage6-{body.action}",
+            ref[:64],
+            {"action": body.action, "targetRef": ref[:64], "esrId": stage6_meta.get("esrId") or (outcome.get("value") or {}).get("reworkEsrId")},
+        )
     db.add(IdempotencyRecord(key=str(idempotency_key), response_json={
         "fingerprint": fingerprint, "value": outcome["value"],
     }))
@@ -482,6 +612,17 @@ async def upload_clinical_diagnostic(
             if linked_dbq_id in state.get("dbqsById", {}):
                 state["dbqsById"][linked_dbq_id]["validationAlerts"] = graph_out.get("validation_alerts") or []
                 state["dbqsById"][linked_dbq_id]["draftMedicalReview"] = graph_out.get("draft_medical_review")
+        if parsed.get("classificationUncertain") and order.get("resultId") in (state.get("diagnosticResultsById") or {}):
+            state["diagnosticResultsById"][order["resultId"]]["classificationUncertain"] = True
+        if exam.get("requiredDbqIds"):
+            from app.services.qa_rules import invalidate_stale_qa_reviews
+            invalidate_stale_qa_reviews(
+                state,
+                order["esrId"],
+                timestamp(),
+                f"Diagnostic report uploaded for order '{order.get('testName', order_id)}'.",
+                affected_dbq_ids=set(exam.get("requiredDbqIds") or []),
+            )
         try:
             save_next_state(db, revision, state)
             db.commit()
@@ -534,3 +675,47 @@ def validate_and_draft_clinical(
                 raise
             db.rollback()
     raise HTTPException(409, "The workspace changed while validating. Please retry.")
+
+
+@router.post("/qa/reviews/{review_id}/audit")
+def run_stage5_qa_audit(
+    review_id: str,
+    force: bool = False,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(workspace_reader),
+) -> dict:
+    if settings.app_env != "dev":
+        raise HTTPException(503, "This workflow action is unavailable.")
+    if user.role not in {"qa", "admin"}:
+        raise HTTPException(403, "Only QA reviewers can trigger Stage 5 audits.")
+    from app.services.qa_pipeline import run_qa_audit_for_state
+    from app.services.qa_rules import check_independent_qa_reviewer
+
+    for _ in range(3):
+        state = get_state(db)
+        review = (state.get("qaReviewsById") or {}).get(review_id)
+        if not review:
+            raise HTTPException(404, "QA review record not found.")
+        check_independent_qa_reviewer(state, review, user.user_id, user.role)
+        revision = state["revision"]
+        audit_out = run_qa_audit_for_state(
+            db,
+            state,
+            review_id,
+            allow_llm=True,
+            force=force,
+        )
+        try:
+            save_next_state(db, revision, state)
+            db.commit()
+            return {
+                "ok": True,
+                "reviewId": review_id,
+                **audit_out,
+                "state": _with_all_views(state),
+            }
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            db.rollback()
+    raise HTTPException(409, "The workspace changed during QA audit. Please retry.")

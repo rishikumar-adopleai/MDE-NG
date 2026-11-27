@@ -28,12 +28,18 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - Give Intake readiness states a single-line queue badge and a clear case-level label. Keep native selects and file inputs keyboard-accessible within the styled controls. Present Medical Triage as a contention-level queue with evidence and the examination plan in one selected workspace.
 
 - Use the same navigation, header hierarchy, queue layout, and drawer behavior across all six workflow routes. Keep route links addressable and support browser Back and Forward.
-- Serve local stage links at the origin root on port 5173. The Intake entry is `http://localhost:5173/?stage=Intake`; do not prefix stage or API links with `/dev`.
+- Show the page title once in the page heading. Use the shared record header for selected cases, with initials and claimant name first, metadata underneath, and status and actions aligned together.
+- Switch selected cases through the queue. Omit close buttons from case headers and keep dismissal controls on dialogs and drawers.
+- Use readable application routes: `/dashboard`, `/intake`, `/medical-triage`, `/scheduling`, `/clinical-evaluation`, `/internal-qa`, and `/va-delivery-review`. Keep the six workflow stages in their existing order, with Dashboard as a separate overview page. Support case deep links as `/{stage}/esr/{esrId}` and keep existing `/?stage=...` bookmarks working through canonical redirects. Serve app and API links from the origin root on port 5173; do not prefix them with `/dev`.
 - Display the main heading in uppercase on each of the six workflow pages.
 - Put Sign out in the top-bar user account menu and omit the environment badge.
 - Display workflow timestamps in `America/New_York` with the applicable EST or EDT abbreviation.
 - Keep source originals server-side and display document details and cited excerpts in the workspace.
 - In Intake and Medical Triage, lead each evidence review with a short paragraph, key points and known gaps. Keep cited source text available on demand in a keyboard-scrollable reader; long document lists must not push the workflow actions down the page.
 - Use workflow language in the interface and omit environment labels. State unavailable external actions clearly and retain the upload confirmation for claimant records.
+- Omit “Simulated” badges and use “internal review” for local delivery activity. Keep the external transmission status explicit.
+- On the Dashboard, use operational labels for workload, deadlines, and appointments. Omit prototype and synthetic data banners and footer copy.
+- Use the available width on the Dashboard. Keep empty states compact and give expanded deadline results and recent activity a full row.
+- Give the Needs attention and Upcoming appointments panels matching desktop heights and scroll their lists independently. Cap list height on narrow screens so short lists stay compact.
 
 - Keep the desktop workflow rail compact and icon-only with stage labels on hover and keyboard focus. Keep the labels visible in the mobile drawer. Show AI features with generic labels and keep provider names, deployment details, and credentials on the backend.

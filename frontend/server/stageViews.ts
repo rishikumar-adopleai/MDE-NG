@@ -40,9 +40,10 @@ export function schedulingView(state: WorkspaceState, work: WorkItem) {
 
 export function evidenceFor(state: WorkspaceState, contentionIds: string[], esrId: string) {
   const ids = new Set(contentionIds.flatMap(id => state.contentionsById[id]?.evidenceDocumentIds ?? []));
+  const allowedEsrIds = new Set([esrId, state.esrsById[esrId]?.linkedOriginalEsrId].filter(Boolean));
   return Array.from(ids).flatMap(id => {
     const item = state.evidenceDocumentsById[id];
-    if (!item || item.esrId !== esrId) return [];
+    if (!item || !allowedEsrIds.has(item.esrId)) return [];
     return [{ id, title: item.title, sourceReference: item.sourceReference,
       sources: item.syntheticExcerpts?.filter(source => contentionIds.includes(source.contentionId)).map(source => ({page: source.pageNumber, text: source.text}))
         ?? item.processing?.sources ?? [],
@@ -86,27 +87,48 @@ export function qaView(state: WorkspaceState, work: WorkItem) {
 }
 
 export function deliveryView(state: WorkspaceState, work: WorkItem) {
-  const pack = state.resultsPackagesById[work.entityId];
-  if (!pack) throw new WorkflowRuleError('This results package is unavailable.');
-  const esr = state.esrsById[pack.esrId];
-  const contents = packageContents(state, pack.esrId);
+  const existingPack = state.resultsPackagesById[work.entityId];
+  const esrId = existingPack?.esrId ?? work.esrId;
+  const esr = state.esrsById[esrId];
+  const pack = existingPack ?? {
+    id: `virtual-pkg-${esrId}`,
+    version: 1,
+    createdAt: esr?.createdAt ?? work.createdAt,
+    updatedAt: esr?.updatedAt ?? work.updatedAt,
+    esrId,
+    dbqIds: [],
+    diagnosticResultIds: [],
+    qaApprovalIds: [],
+    validationStatus: 'blocked' as const,
+    preparationStatus: 'blocked' as const,
+    externalState: 'not-enabled' as const,
+    blockingReasons: work.blockingReasons,
+    versionNumber: 1,
+    submissions: [],
+  };
+  const contents = packageContents(state, esrId);
   const submitted = pack.submissions?.at(-1)?.manifest;
-  const contentions = esr.contentionIds.map(id => state.contentionsById[id]).filter(Boolean);
+  const contentions = (esr?.contentionIds ?? []).map(id => state.contentionsById[id]).filter(Boolean);
   const locked = ['awaiting-response','accepted'].includes(pack.simulatedResponse ?? '');
   return {
-    pack, contentions, blockers: contents.issues, closureBlockers: closureBlockers(state, pack.esrId),
-    reports: contents.dbqIds.map(id => state.dbqsById[id]),
+    pack, esr, contentions, blockers: contents.issues, closureBlockers: closureBlockers(state, esrId),
+    deliverableContentionIds: contents.deliverableContentionIds,
+    pendingContentionIds: contents.pendingContentionIds,
+    contentionEligibility: contents.contentionEligibility,
+    esrCompletionStatus: contents.esrCompletionStatus,
+    reports: contents.dbqIds.map(id => state.dbqsById[id]).filter(Boolean),
     reportTargets: (submitted ?? contents.manifest).reports.map(report => state.dbqsById[report.dbqId]).filter(Boolean),
     contentionTargets: contentions.filter(item => (submitted ?? contents.manifest).contentions.includes(item.id)),
     diagnostics: (locked && submitted ? submitted : contents.manifest).diagnosticResultIds.map(id => {
       const result = state.diagnosticResultsById[id];
       return { id, reference: result?.sourceReference, reviewedAt: result?.reviewedAt };
     }),
-    timeline: Object.values(state.deliveryEventsById).filter(item => item.packageId === pack.id).sort((a,b) => b.recordedAt.localeCompare(a.recordedAt)),
-    tasks: pendingReconciliation(state, pack.esrId).filter(item => item.packageId === pack.id),
+    timeline: Object.values(state.deliveryEventsById).filter(item => item.esrId === esrId).sort((a,b) => b.recordedAt.localeCompare(a.recordedAt)),
+    tasks: pendingReconciliation(state, esrId).filter(item => item.packageId === pack.id),
     actions: {
-      validate: !locked, prepare: !locked && pack.validationStatus === 'passed' && contents.issues.length === 0 && pack.preparationStatus !== 'prepared-locally',
-      simulate: !locked && pack.preparationStatus === 'prepared-locally' && contents.issues.length === 0,
+      validate: !locked && Boolean(existingPack),
+      prepare: !locked && Boolean(existingPack) && pack.validationStatus === 'passed' && contents.issues.length === 0 && pack.preparationStatus !== 'prepared-locally',
+      simulate: !locked && Boolean(existingPack) && pack.preparationStatus === 'prepared-locally' && contents.issues.length === 0,
       respond: pack.simulatedResponse === 'awaiting-response', cancel: pack.simulatedResponse !== 'awaiting-response',
     },
   };

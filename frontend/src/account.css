@@ -49,6 +49,25 @@
   font-size: 1rem;
 }
 
+.account-password { position: relative; }
+.account-password input { padding-inline-end: 52px; }
+.account-password button {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-end: 2px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #146655;
+  cursor: pointer;
+}
+
+.account-password button:hover { background: #e1f1eb; }
 .account-form small { color: #4b645e; }
 .account-submit {
   display: flex;

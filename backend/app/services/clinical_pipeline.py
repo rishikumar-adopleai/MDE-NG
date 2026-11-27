@@ -763,6 +763,11 @@ def ensure_clinical_records_for_exam(state: dict, exam: dict, req: dict, now: st
                 "assignedTo": esr.get("assignedTeamId"),
             }
     exam["requiredDbqIds"] = dbq_ids
+    req_id = req.get("id")
+    if req_id and req_id in (state.get("examinationRequirementsById") or {}):
+        req_record = state["examinationRequirementsById"][req_id]
+        req_record["dbqIds"] = list(dict.fromkeys([*(req_record.get("dbqIds") or []), *dbq_ids]))
+        req_record["diagnosticOrderIds"] = list(dict.fromkeys([*(req_record.get("diagnosticOrderIds") or []), *diag_order_ids]))
 
     # Cancel legacy exam-level Stage 4 workItem if DBQ-level workItems now exist
     legacy_w_key = f"work-clinical-{exam['id']}"

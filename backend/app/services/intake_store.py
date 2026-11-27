@@ -19,6 +19,7 @@ from app.services.workspace_store import get_state, save_next_state
 
 TASK_NAME = "intake.process_document"
 TRIAGE_TASK_NAME = "triage.prepare_case"
+QA_TASK_NAME = "qa.audit_report"
 logger = logging.getLogger(__name__)
 
 
@@ -177,7 +178,9 @@ def queue_document(db: Session, state: dict, esr: dict, filename: str, content: 
         contention = state["contentionsById"][contention_id]
         touch(contention, now, evidenceDocumentIds=[*contention["evidenceDocumentIds"], doc_id])
     from app.services.triage import invalidate_stale_triage_plans
+    from app.services.qa_rules import invalidate_stale_qa_reviews
     invalidate_stale_triage_plans(state, esr["id"], now, f"New evidence document '{filename}' queued; re-triage required.")
+    invalidate_stale_qa_reviews(state, esr["id"], now, f"New evidence document '{filename}' queued in Intake.", affected_doc_ids={doc_id})
 
     if is_duplicate:
         # Create an actionable exception for staff review as required by the Stage 1 specification
@@ -186,6 +189,7 @@ def queue_document(db: Session, state: dict, esr: dict, filename: str, content: 
             **record(issue_id, now),
             "esrId": esr["id"],
             "documentId": doc_id,
+            "duplicateOfDocumentId": existing_id,
             "title": f"Duplicate Document: {filename}",
             "detail": f"File '{filename}' has an identical checksum (SHA-256) to '{existing_title}' already linked to this ESR. Staff review or exclusion required.",
             "status": "open",
@@ -208,7 +212,7 @@ def claim_job() -> tuple[str, str, str, dict] | None:
     with SessionLocal() as db:
         candidate = db.execute(
             select(OutboxJob.id, OutboxJob.task_name, OutboxJob.status).where(
-                OutboxJob.task_name.in_((TASK_NAME, TRIAGE_TASK_NAME)),
+                OutboxJob.task_name.in_((TASK_NAME, TRIAGE_TASK_NAME, QA_TASK_NAME)),
                 or_(OutboxJob.status == "queued",
                     and_(OutboxJob.status.like("run:%"), OutboxJob.status <= f"run:{now:010d}")),
             ).order_by(OutboxJob.created_at).limit(1)
@@ -311,7 +315,9 @@ def finish_job(job_id: str, lease: str, document_id: str, result: dict) -> None:
                           for item in esr["evidenceDocumentIds"])
             touch(esr, now, intakeStatus="processing" if pending else "requires-attention")
             from app.services.triage import invalidate_stale_triage_plans
+            from app.services.qa_rules import invalidate_stale_qa_reviews
             invalidate_stale_triage_plans(state, esr["id"], now, f"Document '{doc.get('title', document_id)}' updated; re-triage required.")
+            invalidate_stale_qa_reviews(state, esr["id"], now, f"Evidence document '{doc.get('title', document_id)}' updated in Intake.", affected_doc_ids={document_id})
             activity(state, esr["id"], document_id, "intake-document-reviewed", "intake-worker", now)
             try:
                 save_state(db, state, esr["id"])
@@ -518,6 +524,10 @@ def process_next_job() -> bool:
     if task_name == TRIAGE_TASK_NAME:
         finish_triage_job(job_id, lease, payload["esrId"], force=bool(payload.get("force")))
         return True
+    if task_name == QA_TASK_NAME:
+        from app.services.qa_pipeline import finish_qa_audit_job
+        finish_qa_audit_job(job_id, lease, payload["reviewId"], force=bool(payload.get("force")))
+        return True
     try:
         result = process_document(
             payload["filename"],
@@ -572,6 +582,16 @@ def apply_intake_command(state: dict, action: str, args: list, actor: str) -> di
         disposition = args[1]
         note = args[2].strip()[:2000]
         doc_id = issue.get("documentId")
+        original_id = issue.get("duplicateOfDocumentId")
+        linked = esr.get("evidenceDocumentIds", [])
+        if (
+            disposition == "resolved"
+            and issue.get("kind") == "duplicate-document"
+            and doc_id != original_id
+            and doc_id in linked
+            and original_id in linked
+        ):
+            raise HTTPException(422, "Exclude the duplicate copy to keep the existing file.")
 
         if disposition == "excluded":
             touch(issue, now, status="resolved", resolution=f"Excluded: {note}")
@@ -663,8 +683,16 @@ def apply_intake_command(state: dict, action: str, args: list, actor: str) -> di
         event = "intake-validated"
 
     from app.services.triage import invalidate_stale_triage_plans
+    from app.services.qa_rules import invalidate_stale_qa_reviews
     if event in {"intake-exception-resolved", "intake-document-reviewed"}:
         invalidate_stale_triage_plans(state, esr_id, now, "Linked evidence changed in Intake; re-triage required.")
+        invalidate_stale_qa_reviews(
+            state,
+            esr_id,
+            now,
+            "Linked evidence updated in Intake; QA re-verification required.",
+            affected_doc_ids={object_id} if object_id and str(object_id).startswith("doc-") else None,
+        )
     activity(state, esr_id, object_id, event, actor, now)
     refresh_intake_work(state, esr_id, now)
     state.update(revision=state["revision"] + 1, updatedAt=now)

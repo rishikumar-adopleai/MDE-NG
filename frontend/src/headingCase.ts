@@ -1,4 +1,4 @@
-const acronyms = new Map(['ACE', 'AI', 'BVA', 'DBQ', 'DBQs', 'EMS', 'ESR', 'ESRs', 'NLP', 'QA', 'VA']
+const acronyms = new Map(['ACE', 'AI', 'BVA', 'DAS', 'DBQ', 'DBQs', 'EMS', 'ESR', 'ESRs', 'NLP', 'QA', 'RAP', 'RAPs', 'VA', 'VBMS']
   .map(word => [word.toLowerCase(), word] as const));
 
 export function titleCaseHeading(label: string): string {

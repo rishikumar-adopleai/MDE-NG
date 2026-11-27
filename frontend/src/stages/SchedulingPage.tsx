@@ -27,6 +27,7 @@ import type {
   SchedulingMatchResponse,
 } from '../domain/model';
 import { StageHeading } from './StageHeading';
+import { RecordHeader } from './RecordHeader';
 import { dateLabel, modalityLabels, resultEntityId, type StageProps } from './StageWorkbench';
 import { Status } from './shared';
 import { HeadingText } from '../HeadingText';
@@ -640,7 +641,7 @@ function LocationVerifyBar({
   return (
     <div className="sched-location-wrap">
       <div className="triage-case-meta">
-        {activeCase.claimIdentifier} · <MapPin size={13} style={{ display: 'inline', verticalAlign: '-2px' }} />{' '}
+        <MapPin size={13} aria-hidden="true" style={{ display: 'inline', verticalAlign: '-2px' }} />{' '}
         {activeCase.postalCode ? (
           <span style={{ color: '#166534', fontWeight: 600 }}>
             {activeCase.city ? `${activeCase.city}, ` : ''}{activeCase.stateCode ? `${activeCase.stateCode} ` : ''}{activeCase.postalCode} · Location verified
@@ -1036,19 +1037,16 @@ export function SchedulingPage({
     return true;
   });
 
-  const [deselected, setDeselected] = useState(false);
-  const activeCase = deselected
-    ? undefined
-    : (visibleCases.find(c => c.esrId === selectedId) ?? visibleCases[0]);
+  const activeCase = visibleCases.find(c => c.esrId === selectedId) ?? visibleCases[0];
 
   useEffect(() => {
-    if (!deselected && visibleCases.length > 0) {
+    if (visibleCases.length > 0) {
       const isCurrentVisible = visibleCases.some(c => c.esrId === selectedId);
       if (!isCurrentVisible) {
         onSelect(visibleCases[0].esrId);
       }
     }
-  }, [deselected, schedFilter, priorityFilter, query, visibleCases, selectedId, onSelect]);
+  }, [schedFilter, priorityFilter, query, visibleCases, selectedId, onSelect]);
 
   return (
     <div className="intake-page queue-workbench">
@@ -1071,7 +1069,6 @@ export function SchedulingPage({
                   placeholder="Search claimant, ESR, or exam"
                   value={query}
                   onChange={e => {
-                    setDeselected(false);
                     onQueryChange(e.target.value);
                   }}
                 />
@@ -1093,7 +1090,6 @@ export function SchedulingPage({
                     key={f.key}
                     aria-pressed={schedFilter === f.key}
                     onClick={() => {
-                      setDeselected(false);
                       setSchedFilter(f.key as any);
                     }}
                   >
@@ -1108,7 +1104,6 @@ export function SchedulingPage({
                     aria-label="Filter scheduling priority and focus"
                     value={priorityFilter}
                     onChange={e => {
-                      setDeselected(false);
                       setPriorityFilter(e.target.value as any);
                     }}
                   >
@@ -1131,7 +1126,6 @@ export function SchedulingPage({
                       className="intake-queue-row"
                       aria-pressed={activeCase?.esrId === c.esrId}
                       onClick={() => {
-                        setDeselected(false);
                         onSelect(c.esrId);
                       }}
                     >
@@ -1188,36 +1182,16 @@ export function SchedulingPage({
             aria-label={`Scheduling details for ${activeCase.claimantName}`}
             tabIndex={0}
           >
-            <header className="triage-case-header">
-              <div className="triage-claimant-block">
-                <span className="intake-avatar">{activeCase.initials}</span>
-                <div>
-                  <LocationVerifyBar key={activeCase.esrId} activeCase={activeCase} />
-                  <h2>{activeCase.claimantName}</h2>
-                  <p className="triage-case-sub">
-                    <Phone size={13} style={{ display: 'inline', verticalAlign: '-2px' }} /> {activeCase.phone} · {activeCase.email} · Priority: {activeCase.priority}
-                  </p>
-                </div>
-              </div>
-              <div className="triage-overview-actions">
+            <RecordHeader name={activeCase.claimantName} initials={activeCase.initials}
+              metadata={<><span>{activeCase.claimIdentifier}</span><span>· Priority: {activeCase.priority}</span></>}
+              summary={<><Phone size={13} aria-hidden="true" /> {activeCase.phone} · {activeCase.email}</>}
+              actions={
                 <Status
                   text={activeCase.pendingCount === 0 ? 'All Scheduled' : `${activeCase.pendingCount} Pending`}
                   tone={activeCase.pendingCount === 0 ? 'green' : 'amber'}
                 />
-                <button
-                  type="button"
-                  className="intake-icon-button"
-                  aria-label="Close case details"
-                  title="Close case"
-                  onClick={() => {
-                    setDeselected(true);
-                    onSelect('');
-                  }}
-                >
-                  <X size={18} />
-                </button>
-              </div>
-            </header>
+              } />
+            <LocationVerifyBar key={activeCase.esrId} activeCase={activeCase} />
 
             <div className="triage-kpi-strip sched-kpi-strip">
               <div className="triage-kpi-box">

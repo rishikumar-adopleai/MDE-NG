@@ -9,6 +9,7 @@ import type { EvidenceDocument, IntakeStatus, LogicalDocument } from '../domain/
 import { CasePanel, Status } from './shared';
 import { DocumentReviewAssistant } from './DocumentReviewAssistant';
 import { StageHeading } from './StageHeading';
+import { RecordHeader } from './RecordHeader';
 import { useQueueRows } from './useQueueRows';
 import { IntakeBrief } from './IntakeBrief';
 import { IntakeImport } from './IntakeImport';
@@ -200,6 +201,8 @@ export function IntakePage(props: IntakeProps) {
   const [savingByEsr, setSavingByEsr] = useState<Record<string, boolean>>({});
   const [receiptReferences, setReceiptReferences] = useState<Record<string, string>>({});
   const caseHeading = useRef<HTMLHeadingElement>(null);
+  const exceptionHeading = useRef<HTMLHeadingElement>(null);
+  const duplicateHeading = useRef<HTMLHeadingElement>(null);
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
   const queueList = useQueueRows(selectedId, mobileQueueOpen, `${intakeStatus}:${activeFilter}:${query}`);
@@ -225,6 +228,9 @@ export function IntakePage(props: IntakeProps) {
   const caseItem = selected ? toCaseItem(state, selected) : undefined;
   const documents = view?.documentIds.map(id => state.evidenceDocumentsById[id]) ?? [];
   const exceptions = view?.exceptionIds.map(id => state.intakeExceptionsById[id]) ?? [];
+  const duplicate = exceptions.find(issue =>
+    (issue.kind === 'duplicate-document' || issue.kind === 'possible-duplicate') &&
+    (issue.status === 'open' || issue.status === 'escalated'));
   const timeline = view?.activityIds.map(id => state.activitiesById[id]) ?? [];
   const receiptReference = receiptReferences[selectedId] ?? '';
 
@@ -355,15 +361,10 @@ export function IntakePage(props: IntakeProps) {
 
       {selected && view && caseItem ? <div className="intake-case-card" key={selected.id}>
         <section className="queue-detail" aria-labelledby="intake-case-title" tabIndex={0}>
-        <header className="intake-case-header">
-          <span className="intake-case-avatar" aria-hidden="true">{caseItem.initials}</span>
-          <div className="intake-case-identity">
-            <span>{practiceCaseLabel(selected) ?? <>{selected.id} <span aria-hidden="true">·</span> {caseItem.claim}</>}</span>
-            <h2 ref={caseHeading} tabIndex={-1} id="intake-case-title">{caseItem.name}</h2>
-            <p>{caseItem.exam}</p>
-          </div>
-          <span className="intake-case-status"><Status text={view.queueLabel} tone={view.canValidate ? 'green' : caseStateTone(view.queueLabel)} /></span>
-        </header>
+        <RecordHeader flush name={caseItem.name} initials={caseItem.initials} headingId="intake-case-title" headingRef={caseHeading}
+          metadata={practiceCaseLabel(selected) ?? <>{selected.id} <span aria-hidden="true">·</span> {caseItem.claim}</>}
+          summary={caseItem.exam}
+          actions={<Status text={view.queueLabel} tone={view.canValidate ? 'green' : caseStateTone(view.queueLabel)} />} />
 
         <div className="intake-progress-strip">
           <p aria-hidden="true">{steps[Math.min(view.steps, steps.length - 1)]}</p>
@@ -376,7 +377,10 @@ export function IntakePage(props: IntakeProps) {
           })}</ol>
         </div>
 
-        <IntakeBrief view={view} onExceptions={() => setSection('exceptions')} />
+        <IntakeBrief view={view} duplicate={duplicate} onExceptions={() => {
+          setSection('exceptions');
+          requestAnimationFrame(() => (duplicateHeading.current ?? exceptionHeading.current)?.focus());
+        }} />
 
         <div className="intake-sections" role="group" aria-label="Case sections">
           {sections.map(({ key, label, icon: Icon }) => <button type="button" key={key} aria-pressed={section === key} onClick={() => setSection(key)}>
@@ -453,14 +457,26 @@ export function IntakePage(props: IntakeProps) {
           </div>
 
           {section === 'exceptions' && <>
-            <div className="intake-content-heading"><div><h3><HeadingText>Exceptions</HeadingText></h3><p>{view.openExceptions} open · {view.escalatedExceptions} escalated</p></div></div>
+            <div className="intake-content-heading"><div><h3 ref={exceptionHeading} tabIndex={-1}><HeadingText>Exceptions</HeadingText></h3><p>{view.openExceptions} open · {view.escalatedExceptions} escalated</p></div></div>
             {exceptions.length === 0 && <p className="intake-inline-empty">No exceptions recorded for this ESR.</p>}
             <div className="intake-issues">{exceptions.map(issue => {
               const note = reviewNotes[issue.id] ?? '';
+              const copy = activeDocuments.find(doc => doc.id === issue.documentId);
+              const original = issue.duplicateOfDocumentId && issue.duplicateOfDocumentId !== issue.documentId
+                ? activeDocuments.find(doc => doc.id === issue.duplicateOfDocumentId) : undefined;
+              const confirmedDuplicate = issue.kind === 'duplicate-document' && Boolean(copy && original);
               return <article key={issue.id} className="intake-issue">
-                <header><h4>{issue.title}</h4><Status text={formatStatus(issue.status)} tone={issue.status === 'open' ? 'red' : issue.status === 'escalated' ? 'amber' : 'green'} /></header>
-                <p>{formatWorkspaceCopy(issue.detail)}</p>
-                {issue.sourceReference && <small>{issue.sourceReference}</small>}
+                <header><h4 ref={issue.id === duplicate?.id ? duplicateHeading : undefined} tabIndex={-1}>{confirmedDuplicate ? 'Duplicate evidence' : issue.title}</h4><Status text={formatStatus(issue.status)} tone={issue.status === 'open' ? 'red' : issue.status === 'escalated' ? 'amber' : 'green'} /></header>
+                {confirmedDuplicate && copy && original ? <>
+                  <p>These files have the same checksum. Exclude the duplicate copy to keep the existing file linked to this request.</p>
+                  <dl className="intake-duplicate-files">
+                    <div><dt>Existing file</dt><dd>{documentName(original.sourceReference || original.title)}</dd></div>
+                    <div><dt>Duplicate copy</dt><dd>{documentName(copy.sourceReference || copy.title)}</dd></div>
+                  </dl>
+                </> : <>
+                  <p>{formatWorkspaceCopy(issue.detail)}</p>
+                  {issue.sourceReference && <small>{issue.sourceReference}</small>}
+                </>}
                 {issue.resolution && <p className="intake-disposition">{issue.resolution}</p>}
                 {['open', 'escalated'].includes(issue.status) && <>
                   <label className="intake-field"><span>Review note</span><textarea rows={2} value={note} aria-label={`Review note for ${issue.title}`}
@@ -475,15 +491,15 @@ export function IntakePage(props: IntakeProps) {
                         style={{ color: '#b91c1c', borderColor: '#fca5a5' }}
                         disabled={isSaving}
                         onClick={() => {
-                          const exclusionNote = note.trim() || 'Source file excluded from evidence by staff.';
+                          const exclusionNote = note.trim() || (confirmedDuplicate ? 'Duplicate copy excluded. Existing file kept.' : 'Source file excluded from evidence by staff.');
                           void run(selected.id, reviewIntakeException(issue.id, 'excluded', exclusionNote));
                         }}
-                        title="Exclude the entire source file from this case’s evidence"
+                        title={confirmedDuplicate ? 'Exclude only the duplicate copy' : 'Exclude the entire source file from this case’s evidence'}
                       >
-                        <Trash2 size={16} /> Exclude source file
+                        <Trash2 size={16} /> {confirmedDuplicate ? 'Exclude duplicate copy' : 'Exclude source file'}
                       </button>
                     )}
-                    <button type="button" className="intake-secondary" disabled={isSaving}
+                    {!confirmedDuplicate && <button type="button" className="intake-secondary" disabled={isSaving}
                       onClick={() => {
                         const resolveNote = note.trim() || 'Staff verified and approved document to keep.';
                         void run(selected.id, reviewIntakeException(issue.id, 'resolved', resolveNote));
@@ -491,7 +507,7 @@ export function IntakePage(props: IntakeProps) {
                       title="Keep this document and remove the duplicate/action flags"
                     >
                       <Check size={16} /> {issue.kind === 'duplicate-document' ? 'Resolve & Keep' : 'Resolve'}
-                    </button>
+                    </button>}
                   </div>
                 </>}
               </article>;

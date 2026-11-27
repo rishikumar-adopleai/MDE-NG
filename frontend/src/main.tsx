@@ -16,6 +16,7 @@ import './dynamic-workspace.css';
 import './intake.css';
 import './workflow-shell.css';
 import './account.css';
+import './dashboard.css';
 import './intake-review.css';
 
 const entryHref = canonicalEntryHref(window.location);

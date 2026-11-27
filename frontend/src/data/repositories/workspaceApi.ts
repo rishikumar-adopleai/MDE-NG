@@ -207,3 +207,13 @@ export function validateAndDraftClinical(dbqId: string, values?: import('../../d
     body: JSON.stringify({ values: values ?? null }),
   });
 }
+
+export function triggerQAAudit(reviewId: string, force = false) {
+  return request<{
+    ok: boolean;
+    reviewId: string;
+    state: WorkspacePayload;
+  }>(`/qa/reviews/${encodeURIComponent(reviewId)}/audit?force=${force ? 'true' : 'false'}`, {
+    method: 'POST',
+  }, 120000);
+}

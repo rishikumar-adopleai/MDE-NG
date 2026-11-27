@@ -32,6 +32,7 @@ import type {
 } from '../domain/model';
 import { EvidenceBrief, buildEvidenceBrief } from './EvidenceBrief';
 import { StageHeading } from './StageHeading';
+import { RecordHeader } from './RecordHeader';
 import { resultEntityId } from './StageWorkbench';
 import { documentName, formatCategory, practiceCaseLabel } from './presentation';
 import { Status } from './shared';
@@ -87,7 +88,7 @@ function ExpandableSummary({
 
 type QueueFilter = 'all' | 'exception' | 'review' | 'ready';
 type ExamChoice = TriageWorkspaceView['examChoices'][number];
-type SourceTarget = {
+export type SourceTarget = {
   documentId?: string;
   documentTitle: string;
   pageNumber?: number;
@@ -177,7 +178,7 @@ function groupCitations(
   return [...byTitle.values()];
 }
 
-function SourceDrawer({
+export function SourceDrawer({
   target,
   documents,
   onClose,
@@ -926,7 +927,6 @@ export function TriagePage({
   selectedId,
   onSelect,
   onScheduling,
-  openSource,
 }: TriageProps) {
   const { state, prepareTriageDossier } = useWorkspace();
   const [queueOpen, setQueueOpen] = useState(false);
@@ -977,8 +977,7 @@ export function TriagePage({
   };
 
   const visibleCases = groups[activeFilter];
-  const [deselected, setDeselected] = useState(false);
-  const activeCase = deselected ? undefined : (visibleCases.find(c => c.esrId === selectedId) ?? visibleCases[0]);
+  const activeCase = visibleCases.find(c => c.esrId === selectedId) ?? visibleCases[0];
   const queueList = useQueueRows(activeCase?.esrId, queueOpen, `${activeFilter}:${query}`);
   const activeEsr = activeCase ? esrsById[activeCase.esrId] : undefined;
   const activeDocs = activeEsr
@@ -1110,9 +1109,7 @@ export function TriagePage({
       <StageHeading
         stage="Medical Triage"
         description="Review extracted medical history, validate DBQ requirements, and approve individual examination plans before scheduling."
-      >
-        <button type="button" className="intake-secondary" onClick={openSource}>Reference library</button>
-      </StageHeading>
+      />
 
       {approvedBanner && (
         <div className="triage-success" role="status">
@@ -1169,7 +1166,6 @@ export function TriagePage({
                   aria-label="Search Medical Triage queue"
                   value={query}
                   onChange={e => {
-                    setDeselected(false);
                     onQueryChange(e.target.value);
                   }}
                 />
@@ -1191,7 +1187,6 @@ export function TriagePage({
                     key={f.key}
                     aria-pressed={activeFilter === f.key}
                     onClick={() => {
-                      setDeselected(false);
                       onFilterChange(f.key);
                     }}
                   >
@@ -1210,7 +1205,6 @@ export function TriagePage({
                       className="intake-queue-row"
                       aria-pressed={activeCase?.esrId === c.esrId}
                       onClick={() => {
-                        setDeselected(false);
                         onSelect(c.esrId);
                         if (queueOpen) {
                           setQueueOpen(false);
@@ -1341,20 +1335,13 @@ export function TriagePage({
             )}
 
             {/* Section 1: Patient & Case Overview */}
-            <header className="triage-overview-header">
-              <div className="triage-overview-identity">
-                <span className="triage-avatar-initials" aria-hidden="true">{activeCase.initials}</span>
-                <div>
-                  <div className="triage-meta-line">
-                    <span>{practiceCaseLabel(activeEsr) ?? activeCase.claimIdentifier}</span>
-                    {activeCase.serviceBranch && <span>· {activeCase.serviceBranch}</span>}
-                    {activeCase.isSimulated && <span className="triage-sim-pill">Simulated</span>}
-                  </div>
-                  <h2 id="triage-case-title" tabIndex={-1} ref={caseHeading}>{activeCase.claimantName}</h2>
-                  <small>{activeCase.benefitProgram} · Priority: {activeCase.priority}</small>
-                </div>
-              </div>
-              <div className="triage-overview-actions">
+            <RecordHeader name={activeCase.claimantName} initials={activeCase.initials} headingId="triage-case-title" headingRef={caseHeading}
+              metadata={<>
+                <span>{practiceCaseLabel(activeEsr) ?? activeCase.claimIdentifier}</span>
+                {activeCase.serviceBranch && <span>· {activeCase.serviceBranch}</span>}
+              </>}
+              summary={`${activeCase.benefitProgram} · Priority: ${activeCase.priority}`}
+              actions={<>
                 <Status
                   text={activeCase.pendingCount === 0 ? 'All Plans Approved' : 'Pending Clinical Review'}
                   tone={activeCase.pendingCount === 0 ? 'green' : 'amber'}
@@ -1368,20 +1355,7 @@ export function TriagePage({
                 >
                   <RefreshCw size={14} /> Refresh analysis
                 </button>
-                <button
-                  type="button"
-                  className="intake-icon-button"
-                  aria-label="Close case details"
-                  title="Close case"
-                  onClick={() => {
-                    setDeselected(true);
-                    onSelect('');
-                  }}
-                >
-                  <X size={18} />
-                </button>
-              </div>
-            </header>
+              </>} />
 
             <div className="triage-kpi-strip">
               <div className="triage-kpi-box">

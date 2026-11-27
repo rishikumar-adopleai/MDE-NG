@@ -1,7 +1,20 @@
 import { HeadingText } from '../HeadingText';
-import { useState, type FormEvent } from 'react';
-import { ArrowRight, Hospital } from 'lucide-react';
+import { useState, type ComponentProps, type FormEvent } from 'react';
+import { ArrowRight, Eye, EyeOff, Hospital } from 'lucide-react';
 import { authenticateAccount } from '../data/repositories/workspaceApi';
+
+function PasswordInput({ label, ...input }: ComponentProps<'input'> & { label: string }) {
+  const [visible, setVisible] = useState(false);
+  const action = `${visible ? 'Hide' : 'Show'} ${label}`;
+
+  return <div className="account-password">
+    <input {...input} type={visible ? 'text' : 'password'} />
+    <button type="button" aria-label={action} title={action} aria-controls={input.id}
+      onClick={() => setVisible(!visible)}>
+      {visible ? <EyeOff size={19} aria-hidden="true" /> : <Eye size={19} aria-hidden="true" />}
+    </button>
+  </div>;
+}
 
 export function AccountAccess() {
   const [mode, setMode] = useState<'login' | 'signup'>('login');
@@ -40,12 +53,12 @@ export function AccountAccess() {
         <label htmlFor="account-email">Email address</label>
         <input id="account-email" name="email" type="email" autoComplete="username" autoCapitalize="none" maxLength={254} required />
         <label htmlFor="account-password">Password</label>
-        <input key={mode} id="account-password" name="password" type="password" autoComplete={signup ? 'new-password' : 'current-password'}
+        <PasswordInput key={mode} label="password" id="account-password" name="password" autoComplete={signup ? 'new-password' : 'current-password'}
           minLength={signup ? 12 : undefined} maxLength={128} aria-describedby={signup ? 'account-password-hint' : undefined} required />
         {signup && <>
           <small id="account-password-hint">Use at least 12 characters.</small>
           <label htmlFor="account-confirm">Confirm password</label>
-          <input id="account-confirm" name="confirm" type="password" autoComplete="new-password" minLength={12} maxLength={128} required />
+          <PasswordInput label="confirmation password" id="account-confirm" name="confirm" autoComplete="new-password" minLength={12} maxLength={128} required />
         </>}
         {error && <p className="account-error" role="alert">{error}</p>}
         <button type="submit" className="account-submit" disabled={busy}>

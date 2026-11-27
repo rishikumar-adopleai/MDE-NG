@@ -1,6 +1,6 @@
 import { HeadingText } from '../HeadingText';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowRight, ChevronDown, ChevronUp, ClipboardList, Inbox, Search, X } from 'lucide-react';
+import { ArrowRight, ChevronDown, ChevronUp, ClipboardList, Inbox, Loader2, Search } from 'lucide-react';
 import { useWorkspace, type CommandResult } from '../context/WorkspaceContext';
 import { getWorkItemsByStage } from '../domain/selectors';
 import type { StageKey, WorkItem } from '../domain/model';
@@ -8,6 +8,7 @@ import { caseStateTone, formatStatus, formatWorkspaceCopy, practiceCaseLabel } f
 import { Status } from './shared';
 import { StageAIReview } from './StageAIReview';
 import { StageHeading } from './StageHeading';
+import { RecordHeader } from './RecordHeader';
 import { useQueueRows } from './useQueueRows';
 
 type QueueFilter = 'all' | 'exception' | 'review' | 'ready';
@@ -53,7 +54,14 @@ export function useStageAction() {
   return { pending, feedback, execute };
 }
 
-export function ActionFeedback({ result }: { result?: CommandResult }) {
+export function ActionFeedback({ result, pending, pendingText }: { result?: CommandResult; pending?: boolean; pendingText?: string }) {
+  if (pending) {
+    return (
+      <p className="stage-feedback delivery-pending-feedback" role="status" aria-live="polite">
+        <Loader2 size={14} className="delivery-spin" aria-hidden="true" /> {pendingText || 'Processing and saving…'}
+      </p>
+    );
+  }
   return result ? <p className={result.ok ? 'stage-feedback' : 'stage-feedback stage-error'} role={result.ok ? 'status' : 'alert'}>{formatWorkspaceCopy(result.message)}</p> : null;
 }
 
@@ -122,7 +130,7 @@ function StackedWorkCard<T>({
         <div className="triage-card-title-group">
           <span className="triage-card-number">{String(index + 1).padStart(2, '0')}</span>
           <div>
-            <h3>{item.title}</h3>
+            <h3>{formatWorkspaceCopy(item.title)}</h3>
             <div className="triage-card-tags">
               <span className="triage-practice-tag">{stage === 'Internal QA' ? 'Signed DBQ Report' : 'Work Item'}</span>
             </div>
@@ -134,7 +142,7 @@ function StackedWorkCard<T>({
             type="button"
             className="intake-icon-button"
             aria-expanded={cardOpen}
-            aria-label={cardOpen ? `Collapse ${item.title}` : `Expand ${item.title}`}
+            aria-label={`${cardOpen ? 'Collapse' : 'Expand'} ${formatWorkspaceCopy(item.title)}`}
             onClick={e => {
               e.stopPropagation();
               setCardOpen(v => !v);
@@ -154,12 +162,11 @@ function StackedWorkCard<T>({
   );
 }
 
-export function StageWorkbench<T>({ stage, description, title, query, onQueryChange, filters, activeFilter, onFilterChange, visibleIds, selectedId, selectedEntityId, onSelect, onReset, handoff, render, openSource }: StageProps & {
+export function StageWorkbench<T>({ stage, description, title, query, onQueryChange, filters, activeFilter, onFilterChange, visibleIds, selectedId, selectedEntityId, onSelect, onReset, handoff, render }: StageProps & {
   stage: StageKey; title: string; description: string; handoff?: ReactNode; render: (detail: T, item: WorkItem) => ReactNode;
 }) {
   const { state } = useWorkspace();
   const [open, setOpen] = useState(false);
-  const [deselected, setDeselected] = useState(false);
   const matches = state ? getWorkItemsByStage(state, stage).filter(item => visibleIds.has(item.esrId)) : [];
   const blocked = (item: WorkItem) => item.status === 'blocked' || item.blockingReasons.length > 0;
   const workStatus = (item: WorkItem) => state?.appointmentsById[item.entityId]?.status ?? item.status;
@@ -170,7 +177,6 @@ export function StageWorkbench<T>({ stage, description, title, query, onQueryCha
     initials: string;
     claimIdentifier: string;
     priority: string;
-    isSimulated: boolean;
     items: WorkItem[];
   };
 
@@ -190,19 +196,16 @@ export function StageWorkbench<T>({ stage, description, title, query, onQueryCha
           .map(w => w[0]?.toUpperCase() ?? '')
           .join('') ||
         'VA';
-      const claimIdentifier = vet?.claimIdentifier || esr?.sourceReference || practiceCaseLabel(esr) || item.esrId;
-      const isSimulated = Boolean(
-        esr?.isSimulated ||
-          item.esrId.startsWith('esr-local') ||
-          item.esrId.toLowerCase().includes('syn'),
-      );
+      const baseIdentifier = vet?.claimIdentifier || esr?.sourceReference || practiceCaseLabel(esr) || item.esrId;
+      const claimIdentifier = esr?.esrType === 'rework'
+        ? `${baseIdentifier} · Rework #${esr.reworkDetails?.reworkSequence ?? 1}`
+        : baseIdentifier;
       grp = {
         esrId: item.esrId,
         claimantName,
         initials,
         claimIdentifier,
         priority: esr?.priority || item.priority || 'routine',
-        isSimulated,
         items: [],
       };
       groupsByEsr.set(item.esrId, grp);
@@ -210,7 +213,10 @@ export function StageWorkbench<T>({ stage, description, title, query, onQueryCha
     grp.items.push(item);
   }
 
-  const allCaseGroups = Array.from(groupsByEsr.values());
+  const hasVaPriority = (g: CaseGroup) =>
+    stage === 'Internal QA' &&
+    (g.priority === 'urgent' || g.items.some(i => i.priority === 'urgent' || state?.qaReviewsById[i.entityId]?.isVaReportFix));
+  const allCaseGroups = Array.from(groupsByEsr.values()).sort((a, b) => Number(hasVaPriority(b)) - Number(hasVaPriority(a)));
   const caseGroups = {
     all: allCaseGroups,
     exception: allCaseGroups.filter(g => g.items.some(blocked)),
@@ -219,12 +225,13 @@ export function StageWorkbench<T>({ stage, description, title, query, onQueryCha
   };
 
   const visibleGroups = caseGroups[activeFilter];
-  const activeGroup = deselected
-    ? undefined
-    : (visibleGroups.find(g => g.esrId === selectedId) ?? visibleGroups[0]);
+  const activeGroup = visibleGroups.find(g => g.esrId === selectedId) ?? visibleGroups[0];
   const itemNoun = stage === 'Internal QA' ? 'report' : stage === 'VA Delivery & Review' ? 'package' : 'item';
 
   const summarizeGroup = (items: WorkItem[]) => {
+    if (stage === 'Internal QA' && items.some(i => state?.qaReviewsById[i.entityId]?.isVaReportFix)) {
+      return { text: 'VA Fix Priority', tone: 'red' as const };
+    }
     const hasBlocked = items.some(blocked);
     if (hasBlocked) return { text: 'Exception', tone: 'red' as const };
     if (items.length === 1) {
@@ -241,23 +248,22 @@ export function StageWorkbench<T>({ stage, description, title, query, onQueryCha
   const queueList = useQueueRows(activeGroup?.esrId, open, `${activeFilter}:${query}`);
   const heading = useRef<HTMLHeadingElement>(null);
   return <div className="intake-page operations-page queue-workbench">
-    <StageHeading stage={stage} description={description}><button type="button" className="intake-secondary" onClick={openSource}>Reference library</button></StageHeading>
+    <StageHeading stage={stage} description={description} />
     {handoff}
     <div className="intake-board">
       <aside className="intake-queue-card" aria-labelledby="stage-queue-heading">
         <div className="intake-queue-heading"><h2 id="stage-queue-heading"><HeadingText>{title}</HeadingText></h2><span>{visibleGroups.length} {visibleGroups.length === 1 ? 'case' : 'cases'}</span></div>
         <button type="button" className="intake-queue-toggle" aria-expanded={open} aria-controls="stage-queue" onClick={() => setOpen(!open)}><Inbox size={17} />{open ? 'Hide work queue' : 'Choose a patient case'}<small>{visibleGroups.length} open</small><ChevronDown size={16} /></button>
         <div id="stage-queue" className={`intake-queue-controls${open ? ' is-open' : ''}`}>
-          <div className="intake-queue-toolbar"><label className="intake-search"><Search size={17} /><input type="search" value={query} onChange={event => { setDeselected(false); onQueryChange(event.target.value); }} placeholder="Search claimant, ESR, or report" aria-label={`Search ${stage} queue`} /></label>
+          <div className="intake-queue-toolbar"><label className="intake-search"><Search size={17} /><input type="search" value={query} onChange={event => { onQueryChange(event.target.value); }} placeholder="Search claimant, ESR, or report" aria-label={`Search ${stage} queue`} /></label>
             <div className="intake-queue-filters" role="group" aria-label="Queue filters">{filters.map(filter =>
-              <button key={filter.key} type="button" aria-pressed={activeFilter === filter.key} onClick={() => { setDeselected(false); onFilterChange(filter.key); }}>{filter.key === 'all' ? 'All cases' : filter.label}<span>{caseGroups[filter.key].length}</span></button>
+              <button key={filter.key} type="button" aria-pressed={activeFilter === filter.key} onClick={() => { onFilterChange(filter.key); }}>{filter.key === 'all' ? 'All cases' : filter.label}<span>{caseGroups[filter.key].length}</span></button>
             )}</div>
           </div>
           {visibleGroups.length ? <ul ref={queueList} className="intake-queue-list">{visibleGroups.map(group => {
             const grpStatus = summarizeGroup(group.items);
             return <li key={group.esrId}>
               <button type="button" className="intake-queue-row" aria-pressed={group.esrId === activeGroup?.esrId} onClick={() => {
-                setDeselected(false);
                 onSelect(group.esrId);
                 if (open) { setOpen(false); requestAnimationFrame(() => heading.current?.focus()); }
               }}>
@@ -272,26 +278,15 @@ export function StageWorkbench<T>({ stage, description, title, query, onQueryCha
         </div>
       </aside>
       {activeGroup ? <section className="intake-case-card triage-case-workspace queue-detail" key={activeGroup.esrId} aria-labelledby="stage-work-title" tabIndex={0}>
-        <header className="triage-case-header">
-          <div className="triage-claimant-block">
-            <span className="intake-avatar">{activeGroup.initials}</span>
-            <div>
-              <div className="triage-meta-line">
-                <span>{activeGroup.claimIdentifier}</span>
-                {activeGroup.isSimulated && <><span>·</span><span className="triage-sim-pill">Simulated</span></>}
-              </div>
-              <h2 ref={heading} tabIndex={-1} id="stage-work-title">{activeGroup.claimantName}</h2>
-              <p className="triage-case-sub">Priority: {activeGroup.priority} · {activeGroup.items.length} {itemNoun}{activeGroup.items.length === 1 ? '' : 's'}</p>
-            </div>
-          </div>
-          <div className="triage-overview-actions">
+        <RecordHeader name={activeGroup.claimantName} initials={activeGroup.initials} headingId="stage-work-title" headingRef={heading}
+          metadata={activeGroup.claimIdentifier}
+          summary={`Priority: ${activeGroup.priority} · ${activeGroup.items.length} ${itemNoun}${activeGroup.items.length === 1 ? '' : 's'}`}
+          actions={<>
             {(() => {
               const s = summarizeGroup(activeGroup.items);
               return <Status text={s.text} tone={s.tone} />;
             })()}
-            <button type="button" className="intake-icon-button" aria-label="Close case details" title="Close case" onClick={() => { setDeselected(true); onSelect(''); }}><X size={18} /></button>
-          </div>
-        </header>
+          </>} />
         {activeGroup.items.length === 1 ? (
           <>
             <StageAIReview stage={stage} entityId={activeGroup.items[0].entityId} />

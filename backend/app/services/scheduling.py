@@ -1265,6 +1265,32 @@ def with_scheduling_view(state: dict) -> dict:
     }
 
 
+def _ensure_requirements_unbooked(state: dict, requirement_ids: list, confirming_id: str | None = None) -> None:
+    """A requirement can have one live booking. Older appointments link through an examination."""
+    requested = set(requirement_ids)
+    if len(requested) != len(requirement_ids):
+        raise HTTPException(409, "The same requirement appears more than once in this booking.")
+    linked_appointments = {
+        req.get("appointmentId") for rid in requested
+        if (req := state.get("examinationRequirementsById", {}).get(rid))
+    }
+    linked_exams = set()
+    for exam in state.get("examinationsById", {}).values():
+        if requested.intersection(exam.get("requirementIds") or []) or exam.get("requirementId") in requested:
+            linked_exams.add(exam["id"])
+            linked_appointments.update(exam.get("appointmentIds") or [])
+            linked_appointments.add(exam.get("appointmentId"))
+    for appointment in state.get("appointmentsById", {}).values():
+        if appointment["id"] == confirming_id or appointment.get("status") not in {
+            "held", "confirmed", "confirmed-locally", "reschedule-requested", "completed",
+        }:
+            continue
+        if (appointment["id"] in linked_appointments
+                or appointment.get("examinationId") in linked_exams
+                or requested.intersection(appointment.get("requirementIds") or [])):
+            raise HTTPException(409, "This requirement already has an appointment. Review the existing booking before scheduling another.")
+
+
 def apply_scheduling_command(db: Session, state: dict, action: str, args: list, actor: str) -> dict:
     """Execute Stage 3 commands with full revalidation & atomic DB slot locking."""
     ensure_stage3_directory_seeded(db)
@@ -1283,6 +1309,7 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
         if any(r.get("status") in {"superseded-by-evidence-revision", "cancelled"} for r in reqs):
             raise HTTPException(409, "Stage 2 requirement was superseded by revised evidence; re-triage required.")
 
+        _ensure_requirements_unbooked(state, req_ids)
         esr = state["esrsById"][reqs[0]["esrId"]]
         veteran = state.get("veteransById", {}).get(esr.get("veteranId"), {})
         exm = db.get(Stage3Examiner, examiner_id)
@@ -1375,6 +1402,8 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
         if len(args) < 1 or not isinstance(args[0], list) or not args[0]:
             raise HTTPException(422, "Provide a list of appointment items to hold.")
         items_payload = args[0]
+        _ensure_requirements_unbooked(state, [item["requirementId"] for item in items_payload
+                                             if isinstance(item, dict) and isinstance(item.get("requirementId"), str)])
         now = timestamp()
         new_appts: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
         locked_slots: list[str] = []
@@ -1562,6 +1591,7 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
         appt = state.get("appointmentsById", {}).get(appt_id)
         if not appt or appt.get("status") != "held":
             raise HTTPException(422, "Only a held appointment can be confirmed.")
+        _ensure_requirements_unbooked(state, appt.get("requirementIds") or [], confirming_id=appt_id)
         if not any(entry.get("outcome") == "answered" for entry in (appt.get("outreachLog") or [])):
             raise HTTPException(422, "Log a 'Veteran confirmed' outreach attempt before confirming this appointment.")
         # Revalidate Stage 2 requirements, examiner license/certs, facility, and travel/location before confirmation
@@ -1618,12 +1648,10 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
         esr_id = appt["esrId"]
         esr = state["esrsById"][esr_id]
         for rid in appt.get("requirementIds", []):
-            if req := state["examinationRequirementsById"].get(rid):
-                touch(req, now, status="scheduled")
             if w := state.get("workItemsById", {}).get(f"work-scheduling-{rid}"):
                 touch(w, now, status="completed")
             exam_id = f"exam-{uuid4().hex[:12]}"
-            req_obj = state["examinationRequirementsById"].get(rid) or {}
+            req_obj = state["examinationRequirementsById"][rid]
             exam_obj = {
                 **record(exam_id, now),
                 "esrId": esr_id,
@@ -1647,6 +1675,8 @@ def apply_scheduling_command(db: Session, state: dict, action: str, args: list, 
             state.setdefault("examinationsById", {})[exam_id] = exam_obj
             from app.services.clinical_pipeline import ensure_clinical_records_for_exam
             created_dbqs = ensure_clinical_records_for_exam(state, exam_obj, req_obj, now)
+            touch(req_obj, now, status="scheduled", dbqIds=created_dbqs,
+                  diagnosticOrderIds=exam_obj["diagnosticOrderIds"])
             value["entityId"] = created_dbqs[0] if created_dbqs else exam_id
         event = "scheduling-appointment-confirmed"
 

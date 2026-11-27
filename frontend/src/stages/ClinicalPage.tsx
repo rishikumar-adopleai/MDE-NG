@@ -40,6 +40,7 @@ import {
   type StageProps,
 } from './StageWorkbench';
 import { StageHeading } from './StageHeading';
+import { RecordHeader } from './RecordHeader';
 import { Status } from './shared';
 import { HeadingText } from '../HeadingText';
 
@@ -848,7 +849,6 @@ export function ClinicalPage(props: StageProps) {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'pending' | 'alerts' | 'signed'>('all');
   const [selectedEsrId, setSelectedEsrId] = useState<string>('');
-  const [deselected, setDeselected] = useState(false);
   const [handoff, setHandoff] = useState<{ stage: 'Internal QA'; esrId: string; entityId?: string }>();
 
   const cases = useMemo<GroupedClinicalCase[]>(() => {
@@ -912,14 +912,13 @@ export function ClinicalPage(props: StageProps) {
 
   const activeCase = useMemo(
     () => {
-      if (deselected) return undefined;
       return (
         visibleCases.find(c => c.esrId === (selectedEsrId || props.selectedId)) ??
         visibleCases[0] ??
         cases[0]
       );
     },
-    [deselected, visibleCases, cases, props.selectedId, selectedEsrId],
+    [visibleCases, cases, props.selectedId, selectedEsrId],
   );
 
   const filterButtons = [
@@ -964,7 +963,6 @@ export function ClinicalPage(props: StageProps) {
                   placeholder="Search claimant, ESR, or DBQ"
                   value={search}
                   onChange={e => {
-                    setDeselected(false);
                     setSearch(e.target.value);
                   }}
                 />
@@ -986,7 +984,6 @@ export function ClinicalPage(props: StageProps) {
                     type="button"
                     aria-pressed={filter === f.key}
                     onClick={() => {
-                      setDeselected(false);
                       setFilter(f.key);
                     }}
                   >
@@ -1005,7 +1002,6 @@ export function ClinicalPage(props: StageProps) {
                       className="intake-queue-row"
                       aria-pressed={activeCase?.esrId === c.esrId}
                       onClick={() => {
-                        setDeselected(false);
                         setSelectedEsrId(c.esrId);
                       }}
                     >
@@ -1048,38 +1044,15 @@ export function ClinicalPage(props: StageProps) {
             aria-label={`Clinical evaluation for ${activeCase.claimantName}`}
             tabIndex={0}
           >
-            <header className="triage-case-header">
-              <div className="triage-claimant-block">
-                <span className="intake-avatar">{activeCase.initials}</span>
-                <div>
-                  <div className="triage-meta-line">
-                    <span>{activeCase.claimIdentifier}</span>
-                    <span>·</span>
-                    <span className="triage-sim-pill">Simulated</span>
-                  </div>
-                  <h2>{activeCase.claimantName}</h2>
-                  <p className="triage-case-sub">Priority: {activeCase.priority}</p>
-                </div>
-              </div>
-              <div className="triage-overview-actions">
+            <RecordHeader name={activeCase.claimantName} initials={activeCase.initials}
+              metadata={activeCase.claimIdentifier}
+              summary={`Priority: ${activeCase.priority}`}
+              actions={
                 <Status
                   text={`${activeCase.signedCount}/${activeCase.totalCount} DBQs Signed`}
                   tone={activeCase.signedCount >= activeCase.totalCount ? 'green' : 'amber'}
                 />
-                <button
-                  type="button"
-                  className="intake-icon-button"
-                  aria-label="Close case details"
-                  title="Close case"
-                  onClick={() => {
-                    setDeselected(true);
-                    setSelectedEsrId('');
-                  }}
-                >
-                  <X size={18} />
-                </button>
-              </div>
-            </header>
+              } />
 
             <div className="triage-kpi-strip">
               <div className="triage-kpi-box">

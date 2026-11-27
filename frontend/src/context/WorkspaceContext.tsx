@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AppointmentLogistics, Communication, DiagnosticReportedFlag, DocumentReviewDecision, EntityId, FieldValues, Modality, SimulatedDeliveryResponse, StageKey, TriagePlan } from '../domain/model';
-import { generateStageReview, intakeRequest, loadRuntime, loadWorkItem, loadWorkspace, receiveIntakeSample, receiveIntakeXml, requestIntakeDocumentReview, sendWorkspaceCommand, triggerTriagePrepare, uploadClinicalDBQ, uploadClinicalDiagnostic, validateAndDraftClinical, WorkspaceApiError, type AIStageReview, type WorkspacePayload, type WorkspaceRuntime } from '../data/repositories/workspaceApi';
+import { generateStageReview, intakeRequest, loadRuntime, loadWorkItem, loadWorkspace, receiveIntakeSample, receiveIntakeXml, requestIntakeDocumentReview, sendWorkspaceCommand, triggerQAAudit, triggerTriagePrepare, uploadClinicalDBQ, uploadClinicalDiagnostic, validateAndDraftClinical, WorkspaceApiError, type AIStageReview, type WorkspacePayload, type WorkspaceRuntime } from '../data/repositories/workspaceApi';
 
 export type CommandResult = { ok: true; message: string; value?: unknown } | { ok: false; message: string };
 export type TriageActionKind = 'draft' | 'approve' | 'clarification' | 'resume' | 'authorizeAce';
@@ -57,8 +57,9 @@ type WorkspaceContextValue = {
   addQAFinding: (reviewId: EntityId, input: { title: string; sectionReference: string; issueCategory: import('../domain/model').QAFinding['issueCategory']; severity: import('../domain/model').QAFinding['severity']; comment: string }) => Promise<CommandResult>;
   resubmitCorrection: (id: EntityId, values: FieldValues) => Promise<CommandResult>;
   resolveQAFinding: (id: EntityId, comment: string) => Promise<CommandResult>;
-  approveQAReview: (id: EntityId, note: string) => Promise<CommandResult>;
+  approveQAReview: (id: EntityId, note: string, manualOverride?: boolean) => Promise<CommandResult>;
   runQAChecklist: (id: EntityId) => Promise<CommandResult>;
+  runQAAudit: (reviewId: EntityId, force?: boolean) => Promise<CommandResult>;
   ensureResultsPackage: (esrId: EntityId) => Promise<CommandResult>;
   validateResultsPackage: (id: EntityId) => Promise<CommandResult>;
   prepareResultsPackage: (id: EntityId) => Promise<CommandResult>;
@@ -68,6 +69,11 @@ type WorkspaceContextValue = {
   simulatePackageTransmission: (id: EntityId) => Promise<CommandResult>;
   recordSimulatedPackageResponse: (id: EntityId, response: 'accepted' | 'report-fix' | 'new-exam-requested', details: string, targetId?: EntityId) => Promise<CommandResult>;
   recordSimulatedContentionCancellation: (esrId: EntityId, contentionId: EntityId, reason: string) => Promise<CommandResult>;
+  uploadContentionDocuments: (packageId: EntityId, contentionIds: EntityId[], simulateFail?: boolean) => Promise<CommandResult>;
+  sendContentionRap: (packageId: EntityId, contentionIds: EntityId[], simulateFail?: boolean) => Promise<CommandResult>;
+  createLinkedReworkESR: (input: { originalEsrId: EntityId; affectedContentionIds: EntityId[]; reworkCategory: 'insufficient' | 'clarification' | 'both'; vaSpecialInstructions: string; previousPackageId?: EntityId; reworkRequestKey?: string }) => Promise<CommandResult>;
+  assessReworkESR: (reworkEsrId: EntityId, decision: { route: 'report-correction' | 'additional-exam-deferred' | 'technical-delivery-issue' | 'pending-clarification'; assessmentNote: string; deficiencyCategory?: string; responsibleStage?: string; correctiveAction?: string; clarificationRequestNote?: string }) => Promise<CommandResult>;
+  updateReworkRootCause: (analyticsId: EntityId, patch: { deficiencyCategory?: string; responsibleStage?: string; correctiveAction?: string; resolutionOutcome?: string }) => Promise<CommandResult>;
   closeESR: (id: EntityId, note: string) => Promise<CommandResult>;
 };
 
@@ -317,6 +323,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, [acceptState]);
 
+  const runQAAudit = useCallback(async (reviewId: EntityId, force = false): Promise<CommandResult> => {
+    try {
+      const version = sessionVersion.current;
+      const result = await triggerQAAudit(reviewId, force);
+      acceptState(result.state, version);
+      return { ok: true, message: 'Stage 5 contract rules and clinical AI audit completed.' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Unable to run Stage 5 QA audit.' };
+    }
+  }, [acceptState]);
+
   const value = useMemo<WorkspaceContextValue>(() => {
     return {
       state, loading, storageError, runtime, importIntakeDocument, retryIntakeDocument, receiveIntakeExample,
@@ -364,8 +381,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       addQAFinding: (id, input) => run('addQAFinding', [id, input], 'QA finding added to this report review.'),
       resubmitCorrection: (id, values) => run('resubmitCorrection', [id, values], 'Correction draft saved. Record clinician sign-off to send it to QA.'),
       resolveQAFinding: (id, comment) => run('resolveQAFinding', [id, comment], 'QA finding disposition saved.'),
-      approveQAReview: (id, note) => run('approveQAReview', [id, note], 'QA approval recorded; result package readiness updated.'),
+      approveQAReview: (id, note, manualOverride) => run('approveQAReview', manualOverride ? [id, note, manualOverride] : [id, note], 'QA approval recorded; result package readiness updated.'),
       runQAChecklist: (id) => run('runQAChecklist', [id], 'Deterministic QA checks completed for the current report version.'),
+      runQAAudit,
       ensureResultsPackage: (esrId) => run('ensureResultsPackage', [esrId], 'Results package opened or created for review.'),
       validateResultsPackage: (id) => run('validateResultsPackage', [id], 'Package validation completed.'),
       prepareResultsPackage: (id) => run('prepareResultsPackage', [id], 'Package preparation recorded. External submission is not enabled.'),
@@ -375,9 +393,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       simulatePackageTransmission: (id) => run('simulatePackageTransmission', [id], 'Package opened for internal delivery review.'),
       recordSimulatedPackageResponse: (id, response, details, targetId) => run('recordSimulatedPackageResponse', [id, response, details, targetId], 'Internal review response and handoff recorded.'),
       recordSimulatedContentionCancellation: (esrId, contentionId, reason) => run('recordSimulatedContentionCancellation', [esrId, contentionId, reason], 'Contention cancellation recorded.'),
+      uploadContentionDocuments: (packageId, contentionIds, simulateFail = false) => run('uploadContentionDocuments', [packageId, contentionIds, simulateFail], simulateFail ? 'Simulated upload failure recorded for retry.' : 'Versioned documents uploaded to local simulated eFolder.'),
+      sendContentionRap: (packageId, contentionIds, simulateFail = false) => run('sendContentionRap', [packageId, contentionIds, simulateFail], simulateFail ? 'Simulated RAP transmission failure recorded; uploaded documents preserved for retry.' : 'Simulated contention RAP transmitted and confirmed.'),
+      createLinkedReworkESR: (input) => run('createLinkedReworkESR', [input], 'Linked VA Rework ESR created in VA Rework Inbox without overwriting original ESR.'),
+      assessReworkESR: (reworkEsrId, decision) => run('assessReworkESR', [reworkEsrId, decision], 'Rework ESR assessment and routing recorded.'),
+      updateReworkRootCause: (analyticsId, patch) => run('updateReworkRootCause', [analyticsId, patch], 'Rework root-cause analysis updated.'),
       closeESR: (id, note) => run('closeESR', [id, note], 'ESR closure recorded.'),
     };
-  }, [state, loading, storageError, runtime, savingIntakeEsrs, busyTriageByContention, triageDraftEdits, setTriageDraftEdit, clearTriageDraftEdit, importIntakeDocument, retryIntakeDocument, receiveIntakeExample, reviewIntakeDocuments, prepareTriageDossier, uploadDBQDocument, uploadDiagnosticDocument, validateAndDraftDBQ, validateIntake, getWorkItem, run, runTriageAction]);
+  }, [state, loading, storageError, runtime, savingIntakeEsrs, busyTriageByContention, triageDraftEdits, setTriageDraftEdit, clearTriageDraftEdit, importIntakeDocument, retryIntakeDocument, receiveIntakeExample, reviewIntakeDocuments, prepareTriageDossier, uploadDBQDocument, uploadDiagnosticDocument, validateAndDraftDBQ, runQAAudit, validateIntake, getWorkItem, run, runTriageAction]);
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

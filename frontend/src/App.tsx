@@ -16,12 +16,15 @@ import { SourceStageRecords } from './stages/SourceStageRecords';
 import type { StageKey } from './stages/model';
 import { dateLabel, formatActivityLabel, formatWorkspaceCopy, toCaseItem } from './stages/presentation';
 import { WorkspaceNavigation, WorkspaceTopbar } from './WorkspaceNavigation';
-import { stageFromSearch, stageHref } from './workspaceRoutes';
+import { readWorkspaceLocation, workspaceHref, type WorkspacePage } from './workspaceRoutes';
+import { DashboardPage } from './DashboardPage';
 
 function WorkspaceApp() {
   const { state, loading, storageError, runtime } = useWorkspace();
-  const [stage, setStage] = useState<StageKey>(() => stageFromSearch(window.location.search));
-  const [selectedId, setSelectedId] = useState('');
+  const initialLocation = readWorkspaceLocation(window.location);
+  const [page, setPage] = useState<WorkspacePage>(initialLocation.page);
+  const [stage, setStage] = useState<StageKey>(() => initialLocation.page === 'Dashboard' ? 'Intake' : initialLocation.page);
+  const [selectedId, setSelectedId] = useState(initialLocation.esrId ?? '');
   const [selectedEntityId, setSelectedEntityId] = useState<string>();
   const [intakeStatus, setIntakeStatus] = useState<IntakeStatus | 'all'>('all');
   const [stageView, setStageView] = useState<'queue' | 'source'>();
@@ -35,9 +38,11 @@ function WorkspaceApp() {
   const pageScrollRef = useRef<HTMLDivElement>(null);
   const focusStageHeading = useRef(false);
 
-  const resetStage = useCallback((name: StageKey) => {
+  const resetPage = useCallback((target: WorkspacePage, esrId?: string) => {
     focusStageHeading.current = true;
-    setStage(name);
+    setPage(target);
+    setStage(target === 'Dashboard' ? 'Intake' : target);
+    setSelectedId(esrId ?? '');
     setStageView(undefined);
     setSelectedEntityId(undefined);
     setQueueFilter('all');
@@ -47,10 +52,13 @@ function WorkspaceApp() {
   }, []);
 
   useEffect(() => {
-    const onPopState = () => resetStage(stageFromSearch(window.location.search));
+    const onPopState = () => {
+      const route = readWorkspaceLocation(window.location);
+      resetPage(route.page, route.esrId);
+    };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [resetStage]);
+  }, [resetPage]);
 
   useEffect(() => {
     const scroll = pageScrollRef.current;
@@ -80,15 +88,15 @@ function WorkspaceApp() {
     };
   }, [activityOpen, stage]);
 
-  const selectStage = (name: StageKey) => {
-    if (stage === name) {
+  const navigateTo = (target: WorkspacePage, esrId?: string) => {
+    if (page === target && (esrId ?? '') === selectedId) {
       setMobileNav(false);
       return;
     }
-    window.history.pushState(null, '', stageHref(name, window.location.search));
-    resetStage(name);
+    window.history.pushState(null, '', workspaceHref(target, esrId));
+    resetPage(target, esrId);
   };
-  const selectESR = setSelectedId;
+  const selectESR = (id: string) => navigateTo(page === 'Dashboard' ? 'Intake' : page, id || undefined);
 
   if (loading) return <div className="app-backdrop"><div className="workspace-loading"><Hospital size={24} /><b>Loading examination workspace</b></div></div>;
   if (!state && runtime?.mode === 'dev' && runtime.authRequired && !storageError) return <AccountAccess />;
@@ -129,29 +137,25 @@ function WorkspaceApp() {
     toastTimer.current = window.setTimeout(() => setToast(undefined), 3600);
   };
   const selectedESR = actualSelectedId ? state.esrsById[actualSelectedId] : undefined;
-  const stageChange = (name: StageKey) => selectStage(name);
   const nextStage: Partial<Record<StageKey, StageKey>> = { Intake: 'Medical Triage', 'Medical Triage': 'Scheduling', Scheduling: 'Clinical Evaluation', 'Clinical Evaluation': 'Internal QA', 'Internal QA': 'VA Delivery & Review' };
   const onContinue = (esrId: string) => {
     const next = nextStage[stage];
-    if (next) {
-      selectESR(esrId);
-      stageChange(next);
-    }
+    if (next) navigateTo(next, esrId);
   };
   const openSource = () => setStageView('source');
   const stageProps = {selectedEntityId, openSource, filters: queueItems.map(({key, label}) => ({key, label})),
     activeFilter: queueFilter, onFilterChange: setQueueFilter, query, onQueryChange: setQuery, visibleIds: matchedIds, selectedId, onSelect: selectESR,
     onReset: () => { setQuery(''); setQueueFilter('all'); },
-    onNavigate: (target: StageKey, id: string, entityId?: string) => { selectESR(id); selectStage(target); setSelectedEntityId(entityId); },
+    onNavigate: (target: StageKey, id: string, entityId?: string) => { navigateTo(target, id); setSelectedEntityId(entityId); },
   };
   const activities = selectedESR ? Object.values(state.activitiesById).filter((item) => item.esrId === selectedESR.id).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 100) : [];
 
   return <div className="app-backdrop"><div className="app-shell workflow-shell" data-stage={stage}>
     <a className="workflow-skip-link" href="#workspace-content">Skip to content</a>
-    <WorkspaceNavigation stage={stage} onNavigate={selectStage} open={mobileNav} onClose={() => setMobileNav(false)} />
+    <WorkspaceNavigation page={page} onNavigate={navigateTo} open={mobileNav} onClose={() => setMobileNav(false)} />
     <main className="main-area" id="workspace-content" tabIndex={-1}>
       <WorkspaceTopbar openNavigation={() => setMobileNav(true)} navigationOpen={mobileNav}
-        canSignOut={runtime?.mode === 'dev'} exceptions={stageExceptionCount} exceptionsSelected={queueFilter === 'exception'}
+        canSignOut={runtime?.mode === 'dev'} exceptions={page === 'Dashboard' ? 0 : stageExceptionCount} exceptionsSelected={queueFilter === 'exception'} showExceptions={false}
         onExceptions={() => {
           setStageView('queue');
           setQuery('');
@@ -160,11 +164,12 @@ function WorkspaceApp() {
         }} />
       {storageError && <div className="storage-warning" role="alert"><AlertCircle size={16} /><span><b>Workspace is read-only</b> The service returned an error: {storageError} Changes cannot be saved.</span></div>}
       <div className="page-scroll" ref={pageScrollRef}><div className="page-main">
-        {runtime?.simulationEnabled === false && <ReadOnlyStageQueue key={stage} stage={stage} state={state}
+        {page === 'Dashboard' && <DashboardPage state={state} onOpen={(target, id) => navigateTo(target, id || undefined)} />}
+        {page !== 'Dashboard' && runtime?.simulationEnabled === false && <ReadOnlyStageQueue key={stage} stage={stage} state={state}
           rows={matches.filter(item => visibleIds.has(item.id)).map(item => toCaseItem(state, item))} selectedId={actualSelectedId} onSelect={selectESR}
           filters={queueItems.map(({key, label, ids}) => ({key, label, count: ids.size}))} activeFilter={queueFilter} onFilterChange={setQueueFilter}
           query={query} onQueryChange={setQuery} onReset={stageProps.onReset} onHistory={() => setActivityOpen(true)} />}
-        {runtime?.simulationEnabled && stage === 'Intake' && <IntakePage onReceived={id => { setQuery(''); setQueueFilter('all'); setIntakeStatus('all'); selectESR(id); }} intakeStatus={intakeStatus} onIntakeStatus={setIntakeStatus} query={query} onQueryChange={setQuery} filters={queueItems.map(({ key, label, ids }) => ({ key, label, count: ids.size }))} activeFilter={queueFilter} onFilterChange={setQueueFilter} onHistory={() => setActivityOpen(true)} visibleIds={visibleIds} selectedId={actualSelectedId ?? ''} onSelect={selectESR} notify={notify} onContinue={onContinue} />}
+        {page !== 'Dashboard' && runtime?.simulationEnabled && stage === 'Intake' && <IntakePage onReceived={id => { setQuery(''); setQueueFilter('all'); setIntakeStatus('all'); selectESR(id); }} intakeStatus={intakeStatus} onIntakeStatus={setIntakeStatus} query={query} onQueryChange={setQuery} filters={queueItems.map(({ key, label, ids }) => ({ key, label, count: ids.size }))} activeFilter={queueFilter} onFilterChange={setQueueFilter} onHistory={() => setActivityOpen(true)} visibleIds={visibleIds} selectedId={actualSelectedId ?? ''} onSelect={selectESR} notify={notify} onContinue={onContinue} />}
         {showSource && <SourceStageRecords key={stage} stage={stage} openQueue={() => setStageView('queue')} />}
         {runtime?.simulationEnabled && !showSource && stage === 'Medical Triage' && <TriagePage openSource={openSource} query={query} onQueryChange={setQuery} filters={queueItems.map(({ key, label }) => ({ key, label: key === 'all' ? 'All contentions' : label }))} activeFilter={queueFilter} onFilterChange={setQueueFilter} selectedId={selectedId} onSelect={selectESR} onScheduling={(id, entityId) => stageProps.onNavigate('Scheduling', id, entityId)} />}
         {runtime?.simulationEnabled && !showSource && stage === 'Scheduling' && <SchedulingPage {...stageProps} />}

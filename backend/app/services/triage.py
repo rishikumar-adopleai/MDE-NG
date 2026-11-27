@@ -176,6 +176,14 @@ def invalidate_stale_triage_plans(state: dict, esr_id: str, now: str, reason: st
         invalidated.append(cid)
     if invalidated:
         (state.get("triageDossiersByEsrId") or {}).pop(esr_id, None)
+        from app.services.qa_rules import invalidate_stale_qa_reviews
+        invalidate_stale_qa_reviews(
+            state,
+            esr_id,
+            now,
+            reason,
+            affected_contention_ids=set(invalidated),
+        )
     return invalidated
 
 
