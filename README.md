@@ -23,7 +23,7 @@ For a new checkout, restore the populated SQLite databases into `backend/data/` 
 .venv/bin/python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 9090 --reload
 ```
 
-Start Vite in another terminal and open the [Intake workspace](http://localhost:5173/?stage=Intake).
+Start Vite in another terminal and open the [Dashboard](http://localhost:5173/dashboard) or the [Intake workspace](http://localhost:5173/intake).
 
 ```sh
 npm --prefix frontend run dev

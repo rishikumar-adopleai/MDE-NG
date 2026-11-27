@@ -1,15 +1,59 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { buildEvidenceBrief } from '../src/stages/evidenceBriefModel.ts';
 import { createSeedWorkspace } from '../src/data/initialization/seedWorkspace.ts';
 import { getCaseMetrics } from '../src/domain/selectors.ts';
 import {
-  recordSimulatedPackageResponse, simulatePackageTransmission, examinerEligibility, getTriageMapping, holdAppointment, prepareResultsPackage,
+  WorkflowRuleError,
+  addQAFinding, approveQAReview, assessReworkESR, computeEsrCompletionStatus, computeOperationalMetrics, computeReconciliationFindings,
+  createLinkedReworkESR, qaApprovalBlockers, resolveQAFinding, runQAChecklist, recordSimulatedContentionCancellation, recordSimulatedPackageResponse, simulatePackageTransmission,
+  sendContentionRap, updateReworkRootCause, uploadContentionDocuments,
+  examinerEligibility, getTriageMapping, holdAppointment, prepareResultsPackage,
   resubmitCorrection, reviewContention, reviewIntakeException, saveDBQDraft, validateResultsPackage,
   appointmentConfirmation, closeESR, completeClinicalReview, completeReconciliationTask, createReconciliationTask,
   dbqForm, recordAppointmentLogistics, recordExamEncounter, recordDiagnosticException, recordOutreach, confirmAppointment,
 } from '../src/services/workflowService.ts';
 
 const seed = () => createSeedWorkspace();
+const evidence = { title: 'EOB.pdf', category: 'insurance-financial', classificationStatus: 'indexed', pageCount: 2, unreadablePageCount: 0 };
+
+test('document summary preserves clinical qualifiers, decimals, and all remaining points', () => {
+  const sentences = ['This is not a bill.', 'Two entries are marked paid.', 'The listed amount is $25.00.', 'Dr. Green found no evidence of injury.', 'Remark code PDC is listed.'];
+  const brief = buildEvidenceBrief({ ...evidence, processing: { provider: 'ai', summary: sentences.join(' '), sources: [{ page: 2, text: 'Original page' }] } });
+  assert.deepEqual([brief.paragraph, ...brief.points, ...brief.more], sentences);
+  assert.deepEqual(brief.sources, [{ page: 2, text: 'Original page' }]);
+});
+
+test('local form labels are not a narrative and keyed facts retain their page', () => {
+  const raw = 'Name Sex Provider Plan Claim Status Service Paid Due Forms '.repeat(10);
+  const sources = [{ page: 1, text: raw }, { page: 2, text: 'This is not a bill\nRemark code: PDC' }];
+  const brief = buildEvidenceBrief({ ...evidence, processing: { provider: 'local', summary: raw, sources } });
+  assert.match(brief.paragraph, /insurer/);
+  assert.deepEqual(brief.points, ['“This is not a bill” (p. 2)', '“Remark code: PDC” (p. 2)']);
+  assert.deepEqual(brief.sources, sources);
+  assert.equal(brief.generated, false);
+});
+
+test('pending, empty and unreadable records are distinguished', () => {
+  const unreadable = buildEvidenceBrief({ ...evidence, unreadablePageCount: 1, classificationStatus: 'needs-human-review' });
+  assert.match(unreadable.issues.join(' '), /1 page could not be read/);
+  assert.match(unreadable.issues.join(' '), /No source excerpt/);
+  const pending = buildEvidenceBrief({ ...evidence, classificationStatus: 'queued', processing: { provider: 'ai', summary: 'Old result' } });
+  assert.match(pending.paragraph, /awaiting processing/);
+  assert.deepEqual(pending.issues, []);
+});
+
+test('section and contention reviews do not borrow another report or contention’s excerpts', () => {
+  const parent = { ...evidence, sections: [{ title: 'A' }, { title: 'B' }], processing: { provider: 'ai', summary: 'Whole file.', sources: [{ page: 1, text: 'First' }, { page: 2, text: 'Second' }] } };
+  const section = { ...evidence, sectionId: 'B', title: 'Second report', startPage: 2, endPage: 2, summary: 'Only the second report.' };
+  const brief = buildEvidenceBrief(section, parent);
+  assert.equal(brief.paragraph, section.summary);
+  assert.deepEqual(brief.sources, [{ page: 2, text: 'Second' }]);
+  const doc = { ...parent, syntheticExcerpts: [{ contentionId: 'other', pageNumber: 1, text: 'Other contention' }] };
+  assert.deepEqual(buildEvidenceBrief(doc, undefined, 'current').sources, []);
+  assert.match(buildEvidenceBrief(doc, undefined, 'current').paragraph, /No excerpt is linked/);
+  assert.deepEqual(buildEvidenceBrief(doc, undefined, 'other').sources, [{ page: 1, text: 'Other contention' }]);
+});
 const valuesFor = (dbq) => dbq.formType.toLowerCase().includes('opinion')
   ? { ...dbq.values, opinionQuestion: 'Is the condition related to the documented service history?', rationale: 'Revised clinician-authored rationale with the reviewed source references.' }
   : { ...dbq.values, history: 'History reviewed and updated.', findings: 'Clinician findings recorded.', rationale: 'Revised clinician-authored rationale with the reviewed source references.' };
@@ -168,15 +212,15 @@ function freshSchedulingScope() {
 const localLogistics = { specialTransportRequired: false, specialTransportStatus: 'not-required', consentStatus: 'simulated-recorded', vaPreapprovalStatus: 'not-required', note: 'Local logistics and consent reviewed.' };
 
 test('reserve scheduling requires three valid attempts and preserves local notice evidence', () => {
-  const {state, work, provider, slot} = freshSchedulingScope();
-  let {state: next, appointmentId} = holdAppointment(state, work.entityId, provider.id, slot);
+  const { state, work, provider, slot } = freshSchedulingScope();
+  let { state: next, appointmentId } = holdAppointment(state, work.entityId, provider.id, slot);
   const claimant = next.veteransById[next.esrsById[work.esrId].veteranId];
   claimant.reserveSchedulingAllowed = true;
   claimant.communicationOptIns = ['email'];
   claimant.representativeReference = 'SYN-REP-10';
   next.appointmentsById[appointmentId].outreachWindowOpenedAt = '2000-01-01T00:00:00Z';
   next = recordAppointmentLogistics(next, appointmentId, localLogistics);
-  const log = (channel, attemptedAt, voicemail) => recordOutreach(next, work.esrId, appointmentId, channel, 'no-response', 'Contact attempted locally.', {attemptedAt, voicemail});
+  const log = (channel, attemptedAt, voicemail) => recordOutreach(next, work.esrId, appointmentId, channel, 'no-response', 'Contact attempted locally.', { attemptedAt, voicemail });
   assert.throws(() => log('phone', '2000-01-01T10:00:00Z'), /voicemail/i);
   assert.throws(() => log('sms', '2000-01-01T10:00:00Z'), /opt-in/i);
   next = log('phone', '2000-01-01T10:00:00Z', 'left');
@@ -190,12 +234,12 @@ test('reserve scheduling requires three valid attempts and preserves local notic
   assert.equal(appointment.schedulingMethod, 'reserve');
   assert.equal(appointment.localNotification.representativeReference, 'SYN-REP-10');
   const notices = Object.values(next.communicationsById).filter(entry => entry.appointmentId === appointmentId && entry.channel === 'mail');
-  assert.deepEqual(notices.map(entry => entry.recipient).sort(), ['claimant','representative']);
+  assert.deepEqual(notices.map(entry => entry.recipient).sort(), ['claimant', 'representative']);
 });
 
 test('sign-off checks the stored draft revision in addition to the form version ID', () => {
-  const {state, work, provider, slot} = freshSchedulingScope();
-  let {state: next, appointmentId} = holdAppointment(state, work.entityId, provider.id, slot);
+  const { state, work, provider, slot } = freshSchedulingScope();
+  let { state: next, appointmentId } = holdAppointment(state, work.entityId, provider.id, slot);
   next = recordOutreach(next, work.esrId, appointmentId, 'phone', 'answered', 'Reached synthetic claimant.');
   next = recordAppointmentLogistics(next, appointmentId, localLogistics);
   next = confirmAppointment(next, appointmentId);
@@ -204,16 +248,16 @@ test('sign-off checks the stored draft revision in addition to the form version 
   const values = Object.fromEntries(dbqForm(dbq).filter(item => item.required).map(item => [item.key, item.options?.[0] ?? 'Synthetic response.']));
   next = saveDBQDraft(next, dbq.id, values);
   const draftRevision = next.dbqVersionsById[dbq.currentVersionId].version;
-  assert.throws(() => completeClinicalReview(next, dbq.id, {versionId: dbq.currentVersionId, confirmed: true, draftRevision}), /completed encounter/i);
+  assert.throws(() => completeClinicalReview(next, dbq.id, { versionId: dbq.currentVersionId, confirmed: true, draftRevision }), /completed encounter/i);
   next = recordExamEncounter(next, dbq.id, 'Synthetic encounter completed.');
   for (const orderId of exam.diagnosticOrderIds) {
     next = recordDiagnosticException(next, orderId, 'claimant-declined', 'Diagnostic exception recorded for the fixture.');
   }
-  next = saveDBQDraft(next, dbq.id, {...values, rationale: 'Updated after encounter.'});
-  assert.throws(() => completeClinicalReview(next, dbq.id, {versionId: dbq.currentVersionId, confirmed: true, draftRevision}), /persisted report version/i);
+  next = saveDBQDraft(next, dbq.id, { ...values, rationale: 'Updated after encounter.' });
+  assert.throws(() => completeClinicalReview(next, dbq.id, { versionId: dbq.currentVersionId, confirmed: true, draftRevision }), /persisted report version/i);
   const currentVersion = next.dbqVersionsById[dbq.currentVersionId];
-  assert.throws(() => completeClinicalReview(next, dbq.id, {versionId: currentVersion.id, confirmed: true}), /persisted report version/i);
-  next = completeClinicalReview(next, dbq.id, {versionId: currentVersion.id, confirmed: true, draftRevision: currentVersion.version});
+  assert.throws(() => completeClinicalReview(next, dbq.id, { versionId: currentVersion.id, confirmed: true }), /persisted report version/i);
+  next = completeClinicalReview(next, dbq.id, { versionId: currentVersion.id, confirmed: true, draftRevision: currentVersion.version });
   assert.equal(next.dbqsById[dbq.id].signedVersionId, currentVersion.id);
 });
 
@@ -232,4 +276,215 @@ test('closure waits for local task resolution and retains the submitted exact re
   assert.deepEqual(state.resultsPackagesById[pack.id].submissions[0].manifest, submitted);
   assert.equal(state.resultsPackagesById[pack.id].preparationStatus, 'closed');
   assert.equal(state.esrsById[pack.esrId].workflowDisposition, 'completed');
+});
+
+test('QA approval succeeds when Python Stage 3 scheduled a requirement before populating requirement.dbqIds', () => {
+  const { state, work, provider, slot } = freshSchedulingScope();
+  let { state: next, appointmentId } = holdAppointment(state, work.entityId, provider.id, slot);
+  next = recordOutreach(next, work.esrId, appointmentId, 'phone', 'answered', 'Reached synthetic claimant.');
+  next = recordAppointmentLogistics(next, appointmentId, localLogistics);
+  next = confirmAppointment(next, appointmentId);
+  const exam = next.examinationsById[next.appointmentsById[appointmentId].examinationId];
+  const dbq = next.dbqsById[exam.requiredDbqIds[0]];
+  // Simulate Python Stage 3 state: requirement.status = 'scheduled' and requirement.dbqIds = []
+  for (const rid of exam.requirementIds) {
+    next.examinationRequirementsById[rid] = {
+      ...next.examinationRequirementsById[rid],
+      status: 'scheduled',
+      dbqIds: [],
+    };
+  }
+  next = recordExamEncounter(next, dbq.id, 'Synthetic encounter completed.');
+  for (const orderId of exam.diagnosticOrderIds) {
+    next = recordDiagnosticException(next, orderId, 'claimant-declined', 'Diagnostic exception recorded.');
+  }
+  const values = Object.fromEntries(dbqForm(dbq).filter(item => item.required).map(item => [item.key, item.options?.[0] ?? 'Synthetic response.']));
+  next = saveDBQDraft(next, dbq.id, values);
+  const ver = next.dbqVersionsById[next.dbqsById[dbq.id].currentVersionId];
+  next = completeClinicalReview(next, dbq.id, { versionId: ver.id, confirmed: true, draftRevision: ver.version });
+  const qaReview = Object.values(next.qaReviewsById).find(item => item.dbqId === dbq.id);
+  next = runQAChecklist(next, qaReview.id).state;
+  const approved = approveQAReview(next, qaReview.id, 'Verified and approved.');
+  assert.equal(approved.dbqsById[dbq.id].status, 'approved-for-package');
+  for (const rid of exam.requirementIds) {
+    assert.ok(approved.examinationRequirementsById[rid].dbqIds.includes(dbq.id));
+    assert.equal(approved.examinationRequirementsById[rid].status, 'completed');
+  }
+});
+
+test('Stage 5 blocks approval on review findings, stale reviews, or failed AI without manual override', () => {
+  const base = createSeedWorkspace();
+  const item = Object.values(base.workItemsById).find(w => w.stage === 'Internal QA' && !base.esrsById[w.esrId].workflowClosedAt);
+  if (!item) return;
+  const review = base.qaReviewsById[item.entityId];
+  let state = runQAChecklist(base, review.id).state;
+  for (const existingFid of state.qaReviewsById[review.id].findingIds) {
+    const f = state.qaFindingsById[existingFid];
+    if (f && ['open', 'correction-requested'].includes(f.status)) {
+      state = resolveQAFinding(state, existingFid, 'Resolved baseline seed finding before isolated Stage 5 guard check.');
+    }
+  }
+
+  // Open review-severity finding blocks approval until resolved
+  const added = addQAFinding(state, review.id, {
+    title: 'Clarify laterality in remarks',
+    sectionReference: 'Remarks',
+    issueCategory: 'evidence-consistency',
+    severity: 'review',
+    comment: 'Confirm left vs right measurement.',
+  });
+  state = added.state;
+  const blockersWithReview = qaApprovalBlockers(state, state.qaReviewsById[review.id]);
+  assert.ok(blockersWithReview.some(b => b.includes('blocking and human-review')));
+  assert.throws(() => approveQAReview(state, review.id, 'Attempt approval with open review finding.'), WorkflowRuleError);
+
+  state = resolveQAFinding(state, added.findingId, 'Confirmed consistent across imaging and exam.');
+
+  // Simulate failed AI audit -> requires explicit manualOverride + >= 10 char note
+  state = {
+    ...state,
+    qaReviewsById: {
+      ...state.qaReviewsById,
+      [review.id]: {
+        ...state.qaReviewsById[review.id],
+        aiAudit: {
+          versionId: review.versionId,
+          status: 'failed',
+          summary: 'Provider unavailable',
+          provider: 'none',
+          evaluatedAt: new Date().toISOString(),
+          manualReviewRequired: true,
+        },
+      },
+    },
+  };
+  assert.throws(() => approveQAReview(state, review.id, 'Manual review complete.'), WorkflowRuleError);
+  assert.throws(() => approveQAReview(state, review.id, 'Short', 'user-qa', true), WorkflowRuleError);
+  const approved = approveQAReview(state, review.id, 'Manually verified all linked facts, diagnostics, and DBQ values.', 'user-qa', true);
+  assert.equal(approved.qaReviewsById[review.id].status, 'approved');
+  assert.equal(approved.qaReviewsById[review.id].manualAiOverride.confirmed, true);
+});
+
+test('Stage 6 supports independent contention RAP, failure/retry without duplicate upload, completion logic, and linked multi-contention Rework ESR assessment', () => {
+  const base = createSeedWorkspace();
+  const pack = Object.values(base.resultsPackagesById).find(p => {
+    const esr = base.esrsById[p.esrId];
+    return p.validationStatus === 'passed' && !esr?.workflowClosedAt && esr?.contentionIds.length >= 2;
+  });
+  assert.ok(pack);
+  const esr = base.esrsById[pack.esrId];
+  const [c1, ...rest] = esr.contentionIds;
+  const c2 = rest[0];
+
+  // 1. ESR completion stays pending initially
+  assert.equal(computeEsrCompletionStatus(base, esr.id), 'pending');
+
+  // 2. Simulated upload fail then upload succeed for contention 1 only (contention-level independence)
+  let state = uploadContentionDocuments(base, pack.id, [c1], true);
+  assert.equal(state.resultsPackagesById[pack.id].contentionDeliveries[c1].documentUploadStatus, 'failed');
+  assert.throws(() => sendContentionRap(state, pack.id, [c1], false), WorkflowRuleError);
+
+  state = uploadContentionDocuments(state, pack.id, [c1], false);
+  assert.equal(state.resultsPackagesById[pack.id].contentionDeliveries[c1].documentUploadStatus, 'uploaded');
+  const uploadsAfterSuccess = state.resultsPackagesById[pack.id].contentionDeliveries[c1].uploadAttempts;
+
+  // 3. Simulated RAP fail then RAP-only retry (uploadAttempts stays unchanged!)
+  state = sendContentionRap(state, pack.id, [c1], true);
+  assert.equal(state.resultsPackagesById[pack.id].contentionDeliveries[c1].rapTransmissionStatus, 'failed');
+  assert.equal(computeEsrCompletionStatus(state, esr.id), 'pending');
+  assert.ok(computeReconciliationFindings(state, esr.id).some(f => f.kind === 'status-mismatch'));
+
+  state = sendContentionRap(state, pack.id, [c1], false);
+  assert.equal(state.resultsPackagesById[pack.id].contentionDeliveries[c1].rapTransmissionStatus, 'sent');
+  assert.equal(state.resultsPackagesById[pack.id].contentionDeliveries[c1].receiptConfirmationStatus, 'confirmed');
+  assert.equal(state.resultsPackagesById[pack.id].contentionDeliveries[c1].uploadAttempts, uploadsAfterSuccess);
+  assert.equal(computeEsrCompletionStatus(state, esr.id), 'pending'); // c2 still pending!
+
+  // Duplicate confirmed RAP is rejected
+  assert.throws(() => sendContentionRap(state, pack.id, [c1], false), WorkflowRuleError);
+
+  // Cancel all remaining contentions -> >=1 delivered + rest cancelled => completed!
+  for (const remId of rest) {
+    state = recordSimulatedContentionCancellation(state, esr.id, remId, 'Claimant withdrew remaining condition.');
+  }
+  assert.equal(computeEsrCompletionStatus(state, esr.id), 'completed');
+
+  // Close original ESR cleanly
+  state = closeESR(state, esr.id, 'Delivered c1 RAP and recorded official cancellation of c2.');
+  const origClosedAt = state.esrsById[esr.id].workflowClosedAt;
+  assert.ok(origClosedAt);
+
+  // 4. Create multi-contention linked Rework ESR -> preserves original ESR completion history!
+  const created = createLinkedReworkESR(state, {
+    originalEsrId: esr.id,
+    affectedContentionIds: [c1, c2],
+    reworkCategory: 'both',
+    vaSpecialInstructions: 'Provide missing ROM measurements and clarify onset date.',
+    previousPackageId: pack.id,
+    reworkRequestKey: 'va-rw-001',
+  });
+  state = created.state;
+  const rwEsrId = created.reworkEsrId;
+  assert.equal(state.esrsById[esr.id].workflowClosedAt, origClosedAt); // Original ESR preserved!
+  assert.equal(state.esrsById[rwEsrId].esrType, 'rework');
+  assert.equal(state.esrsById[rwEsrId].reworkDetails.affectedContentionIds.length, 2);
+  assert.equal(state.esrsById[rwEsrId].reworkDetails.assessmentStatus, 'pending-assessment');
+
+  // Duplicate Rework ESR blocked
+  assert.throws(() => createLinkedReworkESR(state, {
+    originalEsrId: esr.id,
+    affectedContentionIds: [c2, c1],
+    reworkCategory: 'both',
+    vaSpecialInstructions: 'Provide missing ROM measurements and clarify onset date.',
+    reworkRequestKey: 'va-rw-001',
+  }), WorkflowRuleError);
+
+  // 5. Human assessment routes: pending-clarification -> then route to report-correction (Stage 4 -> Stage 5 -> Stage 6)
+  state = assessReworkESR(state, rwEsrId, {
+    route: 'pending-clarification',
+    assessmentNote: 'Awaiting VA date clarification.',
+    clarificationRequestNote: 'Confirm injury year reference.',
+  });
+  assert.equal(state.esrsById[rwEsrId].reworkDetails.reworkRoute, 'pending-clarification');
+
+  state = assessReworkESR(state, rwEsrId, {
+    route: 'report-correction',
+    assessmentNote: 'Route to Stage 4 examiner to document ROM degrees and clarify history.',
+    deficiencyCategory: 'missing-measurement',
+    responsibleStage: 'Clinical Evaluation',
+    correctiveAction: 'Examiner to add goniometer ROM degrees in V2.',
+  });
+  assert.equal(state.esrsById[rwEsrId].reworkDetails.reworkRoute, 'report-correction');
+  const rwDbq = Object.values(state.dbqsById).find(d => d.esrId === rwEsrId);
+  assert.ok(rwDbq);
+  const rwVer = state.dbqVersionsById[rwDbq.currentVersionId];
+  state = completeClinicalReview(state, rwDbq.id, { versionId: rwVer.id, confirmed: true, draftRevision: rwVer.version });
+  const rwQa = Object.values(state.qaReviewsById).find(r => r.dbqId === rwDbq.id);
+  state = runQAChecklist(state, rwQa.id).state;
+  state = approveQAReview(state, rwQa.id, 'Verified rework V2 ROM measurements against VA instructions.');
+  assert.equal(state.dbqsById[rwDbq.id].status, 'approved-for-package');
+
+  // Verify successive rework ESR is allowed and operational metrics + analytics work
+  const rw2 = createLinkedReworkESR(state, {
+    originalEsrId: esr.id,
+    affectedContentionIds: [c1],
+    reworkCategory: 'clarification',
+    vaSpecialInstructions: 'Verify secondary diagnostic lab unit label.',
+    reworkRequestKey: 'va-rw-002',
+  });
+  state = rw2.state;
+  state = assessReworkESR(state, rw2.reworkEsrId, {
+    route: 'additional-exam-deferred',
+    assessmentNote: 'Requires new clinic exam; flagged deferred in demo.',
+    deficiencyCategory: 'missing-diagnostic',
+    responsibleStage: 'Scheduling',
+  });
+  assert.equal(state.esrsById[rw2.reworkEsrId].reworkDetails.reworkRoute, 'additional-exam-deferred');
+
+  state = updateReworkRootCause(state, created.analyticsId, { resolutionOutcome: 'resolved-accepted' });
+  assert.equal(state.reworkAnalyticsById[created.analyticsId].resolutionOutcome, 'resolved-accepted');
+
+  const metrics = computeOperationalMetrics(state);
+  assert.equal(metrics.isInternalDemonstrationMetrics, true);
+  assert.ok(metrics.reworkEsrCount >= 2);
 });

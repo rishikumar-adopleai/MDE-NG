@@ -3,7 +3,7 @@
 .info-dialog{width:min(560px,100%)}
 .dialog-header{display:flex;justify-content:space-between;gap:14px;padding:22px 22px 16px;border-bottom:1px solid #e9edf5}
 .dialog-kicker{display:block;color:#505baa;font-size:10px;font-weight:750;letter-spacing:.1em}
-.dialog-header h2{margin:8px 0 5px;color:#1b2145;font-family:'Plus Jakarta Sans',sans-serif;font-size:20px;font-weight:750;letter-spacing:-.04em}
+.dialog-header h2{margin:8px 0 5px;color:#1b2145;font-family:var(--font);font-size:20px;font-weight:750;letter-spacing:-.04em}
 .dialog-header p{max-width:440px;margin:0;color:#596684;font-size:12px;line-height:1.6}
 .dialog-body{padding:16px 22px 18px}
 .dialog-case{display:flex;align-items:center;gap:10px;padding:10px 11px;background:#f4f6ff;border:1px solid #e6e9f8;border-radius:12px;margin-bottom:15px}

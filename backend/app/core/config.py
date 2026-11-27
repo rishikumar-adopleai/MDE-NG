@@ -17,12 +17,27 @@ class Settings(BaseSettings):
     app_env: Literal["dev", "prod"] = "dev"
     database_url: str = ""
     intake_provider: Literal["local", "azure-openai"] = "local"
-    azure_openai_endpoint: str = ""
+    azure_openai_endpoint: str = Field(
+        default="",
+        validation_alias=AliasChoices("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_BASE_URL"),
+    )
     azure_openai_deployment: str = Field(
         default="",
         validation_alias=AliasChoices("AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_CHAT_DEPLOYMENT"),
     )
     azure_openai_api_key: SecretStr | None = None
+    secondary_llm_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("SECONDARY_LLM_URL", "LLM_API_URL"),
+    )
+    secondary_llm_model: str = Field(
+        default="",
+        validation_alias=AliasChoices("SECONDARY_LLM_MODEL", "LLM_API_MODEL"),
+    )
+    secondary_llm_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SECONDARY_LLM_API_KEY", "LLM_API_KEY"),
+    )
     node_binary: str = ""
     jwt_secret: str = DEFAULT_SECRET
     jwt_issuer: str = ""

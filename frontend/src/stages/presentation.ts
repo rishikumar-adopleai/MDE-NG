@@ -47,6 +47,8 @@ const activityLabels: Partial<Record<ActivityAction, string>> = {
   'intake-exception-reviewed': 'Exception reviewed',
   'intake-exception-resolved': 'Exception resolved',
   'intake-exception-escalated': 'Exception escalated',
+  'simulated-response-recorded': 'Internal review response recorded',
+  'simulated-contention-cancelled': 'Contention cancellation recorded',
 };
 
 export function formatActivityLabel(action: ActivityAction): string {
@@ -58,7 +60,7 @@ export function formatActivityLabel(action: ActivityAction): string {
 export function formatWorkspaceCopy(value: string): string {
   return value
     .replace(/\b(?:local|development) workspace\b/gi, 'workspace')
-    .replace(/\bin (?:this|the) local (?:simulation|workflow)\b/gi, 'in this workspace')
+    .replace(/\bin (?:(?:this|the) local|local) (?:simulation|workflow)\b/gi, 'in this workspace')
     .replace(/\ba (?:local )?simulated\b/gi, 'an internal')
     .replace(/\b(?:local )?simulated\b/gi, match => match[0] === match[0].toUpperCase() ? 'Internal' : 'internal')
     .replace(/\b(?:local|synthetic|seeded) (?=[a-z])/gi, '')

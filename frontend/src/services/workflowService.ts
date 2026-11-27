@@ -1,6 +1,6 @@
 import type {
-  ActivityAction, ActivityEvent, Appointment, AppointmentLogistics, Communication, Contention, DBQ, DBQVersion, DiagnosticOrder, DeliveryEvent, EntityId, Examination, ExaminationRequirement,
-  FieldValues, IntakeException, Modality, PackageManifest, QAReview, QAFinding, ResultsPackage, WorkspaceState,
+  ActivityAction, ActivityEvent, Appointment, AppointmentLogistics, Communication, Contention, ContentionDeliveryRecord, DBQ, DBQVersion, DiagnosticOrder, DeliveryEvent, EntityId, Examination, ExaminationRequirement,
+  EvidenceDocument, FieldValues, IntakeException, Modality, PackageManifest, QAReview, QAFinding, ReconciliationFinding, ResultsPackage, ReworkAnalyticsRecord, WorkspaceState,
 } from '../domain/model.ts';
 import { refreshWorkItems } from '../domain/selectors.ts';
 
@@ -92,14 +92,14 @@ function assertClinicalAccess(state: WorkspaceState, esrId: string, examId: stri
 
 export function recordExamEncounter(state: WorkspaceState, dbqId: string, note: string) {
   const dbq = state.dbqsById[dbqId];
-  if (!dbq || !note?.trim() || note.length > 3000) throw new WorkflowRuleError('Enter a note for this simulated encounter.');
+  if (!dbq || !note?.trim() || note.length > 3000) throw new WorkflowRuleError('Enter a note for this examination encounter.');
   const exam = assertClinicalAccess(state, dbq.esrId, dbq.examinationId);
   const appointment = exam.appointmentIds.map(id => state.appointmentsById[id]).find(item => item?.status === 'confirmed-locally');
   if (!appointment) throw new WorkflowRuleError('There is no confirmed appointment awaiting a completed encounter.');
   const now = nowIso();
   const next = copyMaps(state, ['appointmentsById','examinationsById','activitiesById']);
   next.appointmentsById[appointment.id] = update(appointment, { status: 'completed',
-    history: [...appointment.history, { status: 'completed', at: now, actorId: 'user-clinician', note: note.trim() }],
+    history: [...(appointment.history || []), { status: 'completed', at: now, actorId: 'user-clinician', note: note.trim() }],
   }, now);
   next.examinationsById[exam.id] = update(exam, { status: 'in-progress' }, now);
   addActivity(next, { esrId: dbq.esrId, entityId: appointment.id, entityType: 'appointment', action: 'exam-encounter-recorded', rationale: note.trim() }, now);
@@ -122,14 +122,30 @@ export function recordDiagnosticException(state: WorkspaceState, orderId: string
   return refreshWorkItems(next, now);
 }
 
-export function reviewIntakeException(state: WorkspaceState, exceptionId: EntityId, disposition: 'resolved' | 'escalated', resolution: string) {
+export function reviewIntakeException(state: WorkspaceState, exceptionId: EntityId, disposition: 'resolved' | 'escalated' | 'excluded', resolution: string) {
   const current = state.intakeExceptionsById[exceptionId];
   if (!current) throw new WorkflowRuleError('The selected intake exception is no longer available.');
   if (!resolution.trim()) throw new WorkflowRuleError('Add a note describing the review or escalation.');
   const now = nowIso();
-  const next = copyMaps(state, ['intakeExceptionsById', 'activitiesById']);
-  next.intakeExceptionsById[exceptionId] = update(current, { status: disposition, resolution: resolution.trim() }, now);
-  changedStatus(next, { esrId: current.esrId, entityId: exceptionId, entityType: current.documentId ? 'evidence-document' : 'esr', action: disposition === 'resolved' ? 'intake-exception-resolved' : 'intake-exception-escalated', rationale: resolution.trim() }, current.status, disposition, now);
+  const next = copyMaps(state, ['intakeExceptionsById', 'activitiesById', 'evidenceDocumentsById', 'esrsById']);
+  const finalStatus = disposition === 'excluded' ? 'resolved' : disposition;
+  next.intakeExceptionsById[exceptionId] = update(current, { status: finalStatus, resolution: resolution.trim() }, now);
+  if (disposition === 'excluded' && current.documentId && current.esrId) {
+    const esr = next.esrsById[current.esrId];
+    if (esr) {
+      next.esrsById[current.esrId] = update(esr, { evidenceDocumentIds: esr.evidenceDocumentIds.filter(id => id !== current.documentId) }, now);
+    }
+    const doc = next.evidenceDocumentsById[current.documentId];
+    if (doc) {
+      next.evidenceDocumentsById[current.documentId] = update(doc, { classificationStatus: 'excluded' }, now);
+    }
+  } else if (disposition === 'resolved' && current.documentId) {
+    const doc = next.evidenceDocumentsById[current.documentId];
+    if (doc) {
+      next.evidenceDocumentsById[current.documentId] = update(doc, { classificationStatus: 'indexed' }, now);
+    }
+  }
+  changedStatus(next, { esrId: current.esrId, entityId: exceptionId, entityType: current.documentId ? 'evidence-document' : 'esr', action: disposition === 'escalated' ? 'intake-exception-escalated' : 'intake-exception-resolved', rationale: resolution.trim() }, current.status, finalStatus, now);
   return refreshWorkItems(next, now);
 }
 
@@ -421,7 +437,7 @@ export function confirmAppointment(state: WorkspaceState, appointmentId: EntityI
     const id = `${reference}-${recipient}`;
     next.communicationsById[id] = { id, version: 1, createdAt: now, updatedAt: now, esrId: appointment.esrId, appointmentId, channel: 'mail', direction: 'outbound', recipient, summary, outcome: 'pending', actorId: 'user-scheduler' };
   }
-  next.appointmentsById[appointmentId] = update(appointment, { status: 'confirmed-locally', schedulingMethod: method, localNotification: notice, confirmationNote: confirmationNote.trim(), history: [...appointment.history, { status: 'confirmed-locally', at: now, actorId: 'user-scheduler', note: confirmationNote.trim() }] }, now);
+  next.appointmentsById[appointmentId] = update(appointment, { status: 'confirmed-locally', schedulingMethod: method, localNotification: notice, confirmationNote: confirmationNote.trim(), history: [...(appointment.history || []), { status: 'confirmed-locally', at: now, actorId: 'user-scheduler', note: confirmationNote.trim() }] }, now);
   changedStatus(next, { esrId: appointment.esrId, entityId: appointmentId, entityType: 'appointment', action: 'appointment-confirmed-locally', rationale: confirmationNote }, appointment.status, 'confirmed-locally', now);
   return refreshWorkItems(next, now);
 }
@@ -458,7 +474,7 @@ export function rescheduleAppointment(state: WorkspaceState, appointmentId: Enti
   if (!['held', 'confirmed-locally', 'reschedule-requested'].includes(appointment.status)) throw new WorkflowRuleError('Only an active appointment can be rescheduled.');
   const esr = state.esrsById[appointment.esrId];
   if (esr?.schedulingProgram === 'IDES' && !coordinationReference.trim()) throw new WorkflowRuleError('Record the authorized military coordination reference for IDES.');
-  if (appointment.history.some(item => item.status === 'reschedule-requested')) throw new WorkflowRuleError('A local rescheduling opportunity is already recorded. Escalate for review.');
+  if ((appointment.history || []).some(item => item.status === 'reschedule-requested')) throw new WorkflowRuleError('A local rescheduling opportunity is already recorded. Escalate for review.');
   if (typeof slot?.facilityId !== 'string' || !slot.facilityId) throw new WorkflowRuleError('Select the exact available replacement slot and facility.');
   if (appointment.startsAt === slot.startsAt && appointment.facilityId === slot.facilityId && appointment.modality === slot.modality) throw new WorkflowRuleError('Select a different appointment slot.');
   const exam = state.examinationsById[appointment.examinationId];
@@ -469,7 +485,7 @@ export function rescheduleAppointment(state: WorkspaceState, appointmentId: Enti
   const now = nowIso();
   const next = copyMaps(state, ['appointmentsById', 'activitiesById']);
   const localLogistics: AppointmentLogistics = { ...travel, specialTransportRequired: false, specialTransportStatus: 'pending', consentStatus: 'pending', vaPreapprovalStatus: 'pending', note: '' };
-  next.appointmentsById[appointmentId] = update(appointment, { startsAt: slot.startsAt, endsAt: slot.endsAt, facilityId: slot.facilityId, modality: slot.modality, status: 'held', confirmationNote: undefined, schedulingMethod: undefined, localNotification: undefined, outreachWindowOpenedAt: now, localLogistics, history: [...appointment.history, { status: 'reschedule-requested', at: now, actorId: 'user-scheduler', note: coordinationReference.trim() || 'Replacement slot selected.' }, { status: 'held', at: now, actorId: 'user-scheduler', note: 'Replacement appointment time held pending contact and logistics.' }] }, now);
+  next.appointmentsById[appointmentId] = update(appointment, { startsAt: slot.startsAt, endsAt: slot.endsAt, facilityId: slot.facilityId, modality: slot.modality, status: 'held', confirmationNote: undefined, schedulingMethod: undefined, localNotification: undefined, outreachWindowOpenedAt: now, localLogistics, history: [...(appointment.history || []), { status: 'reschedule-requested', at: now, actorId: 'user-scheduler', note: coordinationReference.trim() || 'Replacement slot selected.' }, { status: 'held', at: now, actorId: 'user-scheduler', note: 'Replacement appointment time held pending contact and logistics.' }] }, now);
   changedStatus(next, { esrId: appointment.esrId, entityId: appointmentId, entityType: 'appointment', action: 'appointment-rescheduled', rationale: 'Replacement slot saved locally; logistics and contact checks are pending.' }, appointment.status, 'held', now);
   return refreshWorkItems(next, now);
 }
@@ -481,7 +497,7 @@ export function cancelAppointment(state: WorkspaceState, appointmentId: EntityId
   if (!reason.trim()) throw new WorkflowRuleError('Add a cancellation reason.');
   const now = nowIso();
   const next = copyMaps(state, ['appointmentsById', 'examinationsById', 'activitiesById']);
-  next.appointmentsById[appointmentId] = update(appointment, { status: 'cancelled', history: [...appointment.history, { status: 'cancelled', at: now, actorId: 'user-scheduler', note: reason.trim() }] }, now);
+  next.appointmentsById[appointmentId] = update(appointment, { status: 'cancelled', history: [...(appointment.history || []), { status: 'cancelled', at: now, actorId: 'user-scheduler', note: reason.trim() }] }, now);
   const examination = next.examinationsById[appointment.examinationId];
   if (examination && !examination.appointmentIds.some((id) => id !== appointmentId && ['held', 'confirmed-locally', 'completed'].includes(state.appointmentsById[id]?.status ?? ''))) next.examinationsById[examination.id] = update(examination, { status: 'awaiting-scheduling', examinerId: undefined }, now);
   changedStatus(next, { esrId: appointment.esrId, entityId: appointmentId, entityType: 'appointment', action: 'appointment-cancelled', rationale: reason.trim() }, appointment.status, 'cancelled', now);
@@ -573,7 +589,13 @@ export function completeClinicalReview(state: WorkspaceState, dbqId: EntityId, a
     throw new WorkflowRuleError('Attest to the exact persisted report version before sending it to QA.');
   }
   if (dbq.formVersion === 'synthetic-v2' && !exam.appointmentIds.some(id => state.appointmentsById[id]?.status === 'completed')) throw new WorkflowRuleError('Record the completed encounter first.');
-  const examiner = exam.examinerId ? state.examinersById[exam.examinerId] : undefined;
+  const apptWithExaminer = exam.appointmentIds.map(id => state.appointmentsById[id]).find(a => a?.examinerId || a?.examinerName);
+  const examiner = (exam.examinerId && state.examinersById[exam.examinerId]) || (apptWithExaminer ? {
+    id: apptWithExaminer.examinerId || exam.examinerId || 'DEMO-EXM',
+    displayName: apptWithExaminer.examinerName || 'Assigned Examiner',
+    credentials: ['MD'],
+    specialties: ['General Medical'],
+  } : undefined);
   if (!examiner) throw new WorkflowRuleError('An assigned examiner is required for local sign-off.');
   const orders = exam.diagnosticOrderIds.map(id => state.diagnosticOrdersById[id]);
   if (orders.some(item => !item || !diagnosticReady(item))) throw new WorkflowRuleError('Review each required diagnostic result or document the applicable exception.');
@@ -584,10 +606,10 @@ export function completeClinicalReview(state: WorkspaceState, dbqId: EntityId, a
     localAttestation: { versionId: dbq.currentVersionId, staffActorId: actorId, examinerId: examiner.id, examinerName: examiner.displayName, credentials: examiner.credentials, specialty: examiner.specialties, at: now } }, now);
   if (exam && !Object.values(state.dbqsById).some((item) => item.examinationId === exam.id && item.id !== dbqId && !['ready-for-qa','in-qa','approved-for-package'].includes(item.status))) next.examinationsById[exam.id] = update(exam, { status: 'ready-for-qa' }, now);
   const existing = Object.values(state.qaReviewsById).find((review) => review.dbqId === dbqId);
-  if (existing) next.qaReviewsById[existing.id] = update(existing, { versionId: dbq.currentVersionId, status: 'queued', reviewerComment: 'Ready for independent QA review.', checks: [] }, now);
+  if (existing) next.qaReviewsById[existing.id] = update(existing, { versionId: dbq.currentVersionId, status: 'queued', reviewerComment: 'Ready for independent QA review.', checks: [], aiAudit: undefined, quarantinedPrivacyFiles: undefined, qaProcessing: { status: 'queued', queuedAt: now, versionId: dbq.currentVersionId } }, now);
   else {
     const reviewId = `qa-${dbqId}-${Date.now()}`;
-    next.qaReviewsById[reviewId] = { id: reviewId, version: 1, createdAt: now, updatedAt: now, esrId: dbq.esrId, dbqId, versionId: dbq.currentVersionId, reviewerId: 'user-qa', findingIds: [], status: 'queued', reviewerComment: '' };
+    next.qaReviewsById[reviewId] = { id: reviewId, version: 1, createdAt: now, updatedAt: now, esrId: dbq.esrId, dbqId, versionId: dbq.currentVersionId, reviewerId: 'user-qa', findingIds: [], status: 'queued', reviewerComment: '', qaProcessing: { status: 'queued', queuedAt: now, versionId: dbq.currentVersionId } };
   }
   addActivity(next, { esrId: dbq.esrId, entityId: dbqId, entityType: 'dbq', action: 'clinical-review-completed', rationale: 'Clinician review recorded. This is not an electronic signature.' }, now);
   return refreshWorkItems(next, now);
@@ -603,15 +625,26 @@ function requireQAReview(state: WorkspaceState, review: QAReview | undefined) {
   return dbq;
 }
 
-export function qaApprovalBlockers(state: WorkspaceState, review: QAReview) {
+const CORE_QA_CHECK_KEYS = ['required-fields', 'clinician-signoff', 'evidence-linkage', 'form-version', 'diagnostics'] as const;
+
+export function qaApprovalBlockers(state: WorkspaceState, review: QAReview, manualOverride = false) {
   const dbq = state.dbqsById[review.dbqId];
   const checks = review.checks ?? [];
   const active = review.findingIds.map(id => state.qaFindingsById[id]).filter(item => ['open','correction-requested'].includes(item?.status));
+  const hasCoreChecks = CORE_QA_CHECK_KEYS.every(key => checks.some(item => item.key === key && item.versionId === review.versionId));
+  const aiRequiresManualOverride = Boolean(
+    review.aiAudit &&
+    (['failed', 'partial'].includes(review.aiAudit.status ?? '') || review.aiAudit.manualReviewRequired) &&
+    !manualOverride &&
+    !review.manualAiOverride?.confirmed
+  );
   return [
     ...(dbq?.signedVersionId !== review.versionId || dbq.currentVersionId !== review.versionId || dbq.localReviewState !== 'review-recorded' ? ['A recorded sign-off is required for the current report revision.'] : []),
-    ...(checks.length !== 5 || checks.some(item => item.versionId !== review.versionId) ? ['Run the deterministic checks for the current signed version.'] : []),
-    ...(checks.some(item => item.severity === 'blocking' && item.status !== 'passed') ? ['Resolve failed deterministic QA checks before approval.'] : []),
-    ...(active.some(item => item.severity === 'blocking') ? ['Resolve or return every blocking finding.'] : []),
+    ...(review.isStale ? [`QA review is stale (${review.staleReason ?? 'linked evidence changed'}); re-run Stage 5 checks/audit before approval.`] : []),
+    ...(!hasCoreChecks || checks.some(item => item.versionId !== review.versionId) ? ['Run the deterministic checks for the current signed version.'] : []),
+    ...(checks.some(item => ['failed', 'human-review-required', 'unable-to-verify'].includes(item.status) || (item.severity === 'blocking' && !['passed', 'not-applicable'].includes(item.status))) ? ['Resolve or disposition failed, unverified, or human-review deterministic QA checks before approval.'] : []),
+    ...(active.some(item => ['blocking', 'review'].includes(item.severity)) ? ['Resolve or return every blocking and human-review finding.'] : []),
+    ...(aiRequiresManualOverride ? ['AI clinical audit failed or was partial; confirm manual human QA inspection before approval.'] : []),
   ];
 }
 
@@ -647,7 +680,7 @@ export function addQAFinding(state: WorkspaceState, reviewId: EntityId, input: {
   const review = state.qaReviewsById[reviewId];
   if (!review) throw new WorkflowRuleError('The selected QA review is no longer available.');
   requireQAReview(state, review);
-  if (!qaFindingCategories.includes(input.issueCategory) || !qaFindingSeverities.includes(input.severity)) throw new WorkflowRuleError('Choose a valid finding category and severity.');
+  if (!(qaFindingCategories as readonly string[]).includes(input.issueCategory) || !qaFindingSeverities.includes(input.severity)) throw new WorkflowRuleError('Choose a valid finding category and severity.');
   if (!input.title.trim() || input.title.length > 180 || !input.sectionReference.trim() || input.sectionReference.length > 180 || !input.comment.trim() || input.comment.length > 3000) throw new WorkflowRuleError('Enter a finding title, section, and reviewer comment.');
   const now = nowIso();
   const keys: (keyof WorkspaceState)[] = ['qaReviewsById', 'qaFindingsById', 'resultsPackagesById', 'activitiesById'];
@@ -687,7 +720,7 @@ export function resubmitCorrection(state: WorkspaceState, dbqId: EntityId, value
   }
   next.dbqsById[dbqId] = update(dbq, { values: { ...values }, status: 'in-progress', validationErrors: [], versionIds: dbq.versionIds.includes(versionId) ? dbq.versionIds : [...dbq.versionIds, versionId], currentVersionId: versionId, localReviewState: 'not-ready', reviewerId: undefined, reviewedAt: undefined }, now);
   const review = next.qaReviewsById[correction.qaReviewId];
-  if (review) next.qaReviewsById[review.id] = update(review, { versionId, status: 'correction-requested', reviewerComment: 'Correction draft is awaiting a new clinician sign-off.', checks: [] }, now);
+  if (review) next.qaReviewsById[review.id] = update(review, { versionId, status: 'correction-requested', reviewerComment: 'Correction draft is awaiting a new clinician sign-off.', checks: [], aiAudit: undefined, isStale: false, staleReason: undefined }, now);
   next.correctionRequestsById[correction.id] = update(correction, { status: 'resubmitted', history: [...correction.history, { at: now, status: 'resubmitted', note: `Submitted version ${versionNumber}.`, actorId: 'user-clinician' }] }, now);
   const examination = next.examinationsById[dbq.examinationId];
   if (examination) next.examinationsById[examination.id] = update(examination, { status: 'awaiting-clinical-review' }, now);
@@ -718,7 +751,8 @@ export function runQAChecklist(state: WorkspaceState, reviewId: EntityId) {
   requireQAReview(state, review);
   const now = nowIso();
   const exam = state.examinationsById[dbq.examinationId];
-  const evidenceIds = [...new Set(dbq.contentionIds.flatMap((id) => state.contentionsById[id]?.evidenceDocumentIds ?? []))].filter(id => state.evidenceDocumentsById[id]?.esrId === review.esrId && state.evidenceDocumentsById[id].classifiedPageCount > 0);
+  const allowedEsrIds = new Set([review.esrId, state.esrsById[review.esrId]?.linkedOriginalEsrId].filter(Boolean));
+  const evidenceIds = [...new Set(dbq.contentionIds.flatMap((id) => state.contentionsById[id]?.evidenceDocumentIds ?? []))].filter(id => allowedEsrIds.has(state.evidenceDocumentsById[id]?.esrId) && state.evidenceDocumentsById[id].classifiedPageCount > 0);
   const orders = exam?.diagnosticOrderIds.map((id) => state.diagnosticOrdersById[id]).filter(Boolean) ?? [];
   const fieldErrors = validateDbqValues(dbq, version.values);
   const checks: NonNullable<QAReview['checks']> = [
@@ -737,8 +771,15 @@ export function runQAChecklist(state: WorkspaceState, reviewId: EntityId) {
     'evidence-linkage': 'evidence-consistency',
     'form-version': 'form-version',
     diagnostics: 'attachment',
+    'doctor-credentials': 'signature-readiness',
+    'forbidden-words': 'incomplete-rationale',
+    'privacy-raw-psych': 'attachment',
+    'labs-safety-24h': 'evidence-consistency',
+    'ace-remarks': 'incomplete-rationale',
+    'veteran-esr-identity': 'evidence-consistency',
+    'dbq-scope-bva': 'form-version',
   };
-  checks.filter((check) => check.status === 'failed').forEach((check) => {
+  checks.filter((check) => ['failed', 'human-review-required', 'unable-to-verify'].includes(check.status)).forEach((check) => {
     const alreadyOpen = findingIds.map((id) => next.qaFindingsById[id]).some((finding) => finding?.origin === 'deterministic' && finding.versionId === version.id && finding.checkKey === check.key && ['open', 'correction-requested'].includes(finding.status));
     if (alreadyOpen) return;
     const id = `finding-rule-${review.id}-${check.key}-${Date.now()}-${++activitySequence}`;
@@ -755,26 +796,154 @@ export function runQAChecklist(state: WorkspaceState, reviewId: EntityId) {
   return { state: refreshWorkItems(next, now), checks, failedCount };
 }
 
-export function approveQAReview(state: WorkspaceState, reviewId: EntityId, approvalNote = '', actorId = 'user-qa') {
+export function approveQAReview(state: WorkspaceState, reviewId: EntityId, approvalNote = '', actorId = 'user-qa', manualOverride = false) {
   const review = state.qaReviewsById[reviewId];
   const dbq = requireQAReview(state, review);
-  const blockers = qaApprovalBlockers(state, review);
+  const blockers = qaApprovalBlockers(state, review, Boolean(manualOverride));
   if (blockers[0]) throw new WorkflowRuleError(blockers[0]);
   if (!approvalNote.trim() || approvalNote.length > 3000) throw new WorkflowRuleError('Record the independent reviewer decision before approving.');
+  if (review.aiAudit && (['failed', 'partial'].includes(review.aiAudit.status ?? '') || review.aiAudit.manualReviewRequired) && approvalNote.trim().length < 10) {
+    throw new WorkflowRuleError('When AI clinical audit failed or was partial, enter an approval note (minimum 10 characters) documenting your manual review.');
+  }
   const now = nowIso();
-  const next = copyMaps(state, ['qaReviewsById', 'dbqsById', 'examinationsById', 'correctionRequestsById', 'resultsPackagesById', 'activitiesById']);
-  next.qaReviewsById[reviewId] = update(review, { status: 'approved', approvedAt: now, reviewerId: actorId, reviewerComment: approvalNote.trim() }, now);
+  const next = copyMaps(state, ['qaReviewsById', 'dbqsById', 'examinationsById', 'examinationRequirementsById', 'correctionRequestsById', 'resultsPackagesById', 'activitiesById']);
+  next.qaReviewsById[reviewId] = update(review, {
+    status: 'approved',
+    approvedAt: now,
+    reviewerId: actorId,
+    reviewerComment: approvalNote.trim(),
+    isVaReportFix: false,
+    approvedEvidenceDigest: review.evidenceDigest,
+    ...(manualOverride ? { manualAiOverride: { confirmed: true, note: approvalNote.trim(), actorId, at: now } } : {}),
+  }, now);
   next.dbqsById[dbq.id] = update(dbq, { status: 'approved-for-package' }, now);
   const examination = next.examinationsById[dbq.examinationId];
-  if (examination && examination.requiredDbqIds.every((id) => id === dbq.id || state.dbqsById[id]?.status === 'approved-for-package')) next.examinationsById[examination.id] = update(examination, { status: 'completed' }, now);
+  if (examination && examination.esrId === dbq.esrId && examination.requiredDbqIds.includes(dbq.id)) {
+    const allExamDbqsApproved = examination.requiredDbqIds.every((id) => id === dbq.id || next.dbqsById[id]?.status === 'approved-for-package');
+    if (allExamDbqsApproved) next.examinationsById[examination.id] = update(examination, { status: 'completed' }, now);
+    for (const rid of examination.requirementIds ?? []) {
+      const req = next.examinationRequirementsById[rid];
+      if (!req || req.esrId !== dbq.esrId || ['superseded-by-evidence-revision', 'cancelled'].includes(req.status)) continue;
+      const mergedDbqs = [...new Set([...(req.dbqIds ?? []), ...examination.requiredDbqIds, dbq.id])];
+      const allReqApproved = mergedDbqs.every((id) => id === dbq.id || next.dbqsById[id]?.status === 'approved-for-package');
+      next.examinationRequirementsById[rid] = update(req, { dbqIds: mergedDbqs, diagnosticOrderIds: [...new Set([...(req.diagnosticOrderIds ?? []), ...examination.diagnosticOrderIds])], ...(allReqApproved ? { status: 'completed' as const } : {}) }, now);
+    }
+  }
   Object.values(state.correctionRequestsById).filter((item) => item.dbqId === dbq.id && item.status === 'resubmitted').forEach((item) => {
     next.correctionRequestsById[item.id] = update(item, { status: 'closed', history: [...item.history, { at: now, status: 'closed', note: 'Correction accepted in QA.', actorId: 'user-qa' }] }, now);
   });
   refreshPackages(next, dbq.esrId, now);
   addActivity(next, { esrId: dbq.esrId, entityId: reviewId, entityType: 'qa-review', action: 'qa-review-approved', rationale: 'QA approval recorded; package preparation may proceed.' }, now);
-  const contents = packageContents(next, dbq.esrId);
-  if (!contents.issues.length) return ensureResultsPackage(next, dbq.esrId);
-  return refreshWorkItems(next, now);
+  // QA approves a report revision. Other contentions may still prevent packaging.
+  return packageContents(next, dbq.esrId).dbqIds.length
+    ? ensureResultsPackage(next, dbq.esrId)
+    : refreshWorkItems(next, now);
+}
+
+function requirementDbqIds(state: WorkspaceState, requirement: ExaminationRequirement, contention: Contention): EntityId[] {
+  if (requirement.dbqIds.length > 0) return requirement.dbqIds;
+  const fromExams = Object.values(state.examinationsById)
+    .filter(exam => exam.esrId === requirement.esrId && exam.requirementIds.includes(requirement.id))
+    .flatMap(exam => exam.requiredDbqIds);
+  if (fromExams.length > 0) return [...new Set(fromExams)];
+  return Object.values(state.dbqsById)
+    .filter(dbq => dbq.esrId === requirement.esrId && dbq.contentionIds.includes(contention.id))
+    .map(dbq => dbq.id);
+}
+
+export function computeEsrCompletionStatus(state: WorkspaceState, esrId: EntityId): 'pending' | 'completed' | 'cancelled' {
+  const esr = state.esrsById[esrId];
+  const contentions = (esr?.contentionIds ?? []).map(id => state.contentionsById[id]).filter(Boolean);
+  if (!contentions.length) return 'cancelled';
+  const packs = Object.values(state.resultsPackagesById).filter(item => item.esrId === esrId);
+  let deliveredCount = 0;
+  let cancelledCount = 0;
+  let pendingCount = 0;
+  for (const c of contentions) {
+    if (c.simulatedDisposition === 'cancelled') {
+      cancelledCount += 1;
+      continue;
+    }
+    const cd = packs.map(p => p.contentionDeliveries?.[c.id]).find(Boolean);
+    const isDelivered =
+      c.simulatedDisposition === 'accepted' ||
+      c.simulatedDisposition === 'rap-delivered' ||
+      Boolean(cd && (cd.vaReviewOutcome === 'accepted' || (cd.rapTransmissionStatus === 'sent' && cd.receiptConfirmationStatus === 'confirmed')));
+    if (isDelivered) deliveredCount += 1;
+    else pendingCount += 1;
+  }
+  if (cancelledCount === contentions.length) return 'cancelled';
+  if (pendingCount > 0) return 'pending';
+  if (deliveredCount >= 1 && deliveredCount + cancelledCount === contentions.length) return 'completed';
+  return 'pending';
+}
+
+export function contentionDeliveryEligibility(state: WorkspaceState, esrId: EntityId, contention: Contention) {
+  const issues: string[] = [];
+  if (contention.simulatedDisposition === 'cancelled') {
+    return { eligible: false, cancelled: true, dbqIds: [] as EntityId[], reports: [] as PackageManifest['reports'], diagnosticResultIds: [] as EntityId[], evidenceDigest: undefined as string | undefined, rulesVersion: undefined as string | undefined, issues };
+  }
+  const esr = state.esrsById[esrId];
+  const isTechRework = esr?.esrType === 'rework' && esr.reworkDetails?.reworkRoute === 'technical-delivery-issue';
+  const requirement = state.examinationRequirementsById[contention.examinationRequirementIds.at(-1) ?? ''];
+  const techDbqIds = isTechRework ? (esr.reworkDetails?.affectedDbqIds ?? []).filter(id => {
+    const d = state.dbqsById[id];
+    return d && contention.evidenceDocumentIds.some(doc => d.contentionIds.some(oc => state.contentionsById[oc]?.evidenceDocumentIds.includes(doc)));
+  }) : [];
+  const linkedDbqIds = requirement ? requirementDbqIds(state, requirement, contention) : (isTechRework ? (techDbqIds.length ? techDbqIds : (esr.reworkDetails?.affectedDbqIds ?? [])) : []);
+  if ((!requirement || !linkedDbqIds.length || !['approved', 'scheduled', 'completed'].includes(requirement.status)) && !isTechRework) {
+    issues.push(`${contention.title} is awaiting an examination report for its current scope.`);
+    return { eligible: false, cancelled: false, dbqIds: linkedDbqIds, reports: [] as PackageManifest['reports'], diagnosticResultIds: [] as EntityId[], evidenceDigest: undefined as string | undefined, rulesVersion: undefined as string | undefined, issues };
+  }
+  const reports: PackageManifest['reports'] = [];
+  const diagnosticResultIds = new Set<EntityId>();
+  let rulesVersion: string | undefined;
+  let evidenceDigest: string | undefined;
+  const targetEsrId = isTechRework && esr?.reworkDetails ? esr.reworkDetails.originalEsrId : esrId;
+  for (const id of linkedDbqIds) {
+    const dbq = state.dbqsById[id];
+    if (!dbq || dbq.esrId !== targetEsrId || (!isTechRework && !dbq.contentionIds.includes(contention.id))) {
+      issues.push(`${contention.title} has an invalid report link.`);
+      continue;
+    }
+    if (dbq.status !== 'approved-for-package') {
+      issues.push(`${dbq.formType} (${contention.title}) is not QA approved.`);
+      continue;
+    }
+    const revision = state.dbqVersionsById[dbq.currentVersionId];
+    const approval = Object.values(state.qaReviewsById).find(item =>
+      item.esrId === targetEsrId && item.dbqId === dbq.id && item.status === 'approved' && !item.isStale && item.versionId === dbq.currentVersionId);
+    if (!revision || revision.dbqId !== dbq.id || !approval || dbq.signedVersionId !== dbq.currentVersionId || dbq.localReviewState !== 'review-recorded') {
+      issues.push(`${dbq.formType} (${contention.title}) lacks matching clinician review and current non-stale QA approval.`);
+      continue;
+    }
+    rulesVersion = rulesVersion ?? approval.ruleVersion;
+    evidenceDigest = evidenceDigest ?? approval.approvedEvidenceDigest ?? approval.evidenceDigest;
+    reports.push({ dbqId: id, revisionId: revision.id, approvalId: approval.id });
+    for (const orderId of state.examinationsById[dbq.examinationId]?.diagnosticOrderIds ?? []) {
+      const order = state.diagnosticOrdersById[orderId];
+      if (!order || !diagnosticReady(order)) {
+        issues.push(`${dbq.formType} has a required diagnostic awaiting disposition.`);
+        continue;
+      }
+      for (const resultId of order.resultIds) {
+        const result = state.diagnosticResultsById[resultId];
+        if (result?.esrId === esrId && result.orderId === order.id && result.reviewedAt && !result.containsRestrictedRawMaterial && !result.classificationUncertain) {
+          diagnosticResultIds.add(result.id);
+        }
+      }
+    }
+  }
+  return {
+    eligible: issues.length === 0 && reports.length > 0,
+    cancelled: false,
+    dbqIds: linkedDbqIds,
+    reports,
+    diagnosticResultIds: [...diagnosticResultIds],
+    evidenceDigest,
+    rulesVersion,
+    issues,
+  };
 }
 
 export function packageContents(state: WorkspaceState, esrId: string) {
@@ -784,56 +953,67 @@ export function packageContents(state: WorkspaceState, esrId: string) {
   const reports = new Map<string, PackageManifest['reports'][number]>();
   const dbqIds = new Set<string>();
   const diagnosticResultIds = new Set<string>();
+  const deliverableContentionIds: EntityId[] = [];
+  const pendingContentionIds: EntityId[] = [];
+  const contentionEligibility: Record<EntityId, ReturnType<typeof contentionDeliveryEligibility>> = {};
+
   if (!esr?.aepRecordedAt) issues.add('The ESR acknowledgement is missing.');
   if (!contentions.length) issues.add('There are no active contentions to include in this package.');
+
   for (const contention of contentions) {
     if (!contention) { issues.add('A contention linked to this ESR could not be found.'); continue; }
-    const requirement = state.examinationRequirementsById[contention.examinationRequirementIds.at(-1) ?? ''];
-    if (!requirement || !requirement.dbqIds.length || !['approved','completed'].includes(requirement.status)) {
-      issues.add(`${contention.title} is awaiting an examination report for its current scope.`);
-      continue;
-    }
-    for (const id of requirement.dbqIds) {
-      const dbq = state.dbqsById[id];
-      if (!dbq || dbq.esrId !== esrId || !dbq.contentionIds.includes(contention.id)) {
-        issues.add(`${contention.title} has an invalid report link.`);
-        continue;
-      }
-      dbqIds.add(dbq.id);
-      if (dbq.status !== 'approved-for-package') { issues.add(`${dbq.formType} is not QA approved.`); continue; }
-      const revision = state.dbqVersionsById[dbq.currentVersionId];
-      const approval = Object.values(state.qaReviewsById).find(item =>
-        item.esrId === esrId && item.dbqId === dbq.id && item.status === 'approved' && item.versionId === dbq.currentVersionId);
-      if (!revision || revision.dbqId !== dbq.id || !approval || dbq.signedVersionId !== dbq.currentVersionId || dbq.localReviewState !== 'review-recorded') {
-        issues.add(`${dbq.formType} does not have matching clinician review and QA approval for its current revision.`);
-        continue;
-      }
-      reports.set(id, { dbqId: id, revisionId: revision.id, approvalId: approval.id });
-      for (const orderId of state.examinationsById[dbq.examinationId]?.diagnosticOrderIds ?? []) {
-        const order = state.diagnosticOrdersById[orderId];
-        if (!order || !diagnosticReady(order)) { issues.add(`${dbq.formType} has a required diagnostic awaiting disposition.`); continue; }
-        for (const resultId of order.resultIds) {
-          const result = state.diagnosticResultsById[resultId];
-          if (result?.esrId === esrId && result.orderId === order.id && result.reviewedAt && !result.containsRestrictedRawMaterial) diagnosticResultIds.add(result.id);
-        }
-      }
-    }
+    const check = contentionDeliveryEligibility(state, esrId, contention);
+    contentionEligibility[contention.id] = check;
+    check.dbqIds.forEach(id => dbqIds.add(id));
+    check.reports.forEach(r => reports.set(`${contention.id}:${r.dbqId}`, r));
+    check.diagnosticResultIds.forEach(id => diagnosticResultIds.add(id));
+    if (check.eligible && esr?.aepRecordedAt) deliverableContentionIds.push(contention.id);
+    else pendingContentionIds.push(contention.id);
+    check.issues.forEach(msg => issues.add(msg));
   }
-  const manifest: PackageManifest = { contentions: contentions.filter(Boolean).map(item => item.id), reports: [...reports.values()],
-    diagnosticResultIds: [...diagnosticResultIds] };
-  return { manifest, dbqIds: [...dbqIds], issues: [...issues] };
+  const uniqueReports = [...new Map([...reports.values()].map(r => [r.dbqId, r])).values()];
+  const approvedReviews = Object.values(state.qaReviewsById).filter(item => item.esrId === esrId && item.status === 'approved' && !item.isStale);
+  const rulesVersion = approvedReviews.find(item => item.ruleVersion)?.ruleVersion;
+  const manifest: PackageManifest = {
+    contentions: contentions.filter(Boolean).map(item => item.id),
+    reports: uniqueReports,
+    diagnosticResultIds: [...diagnosticResultIds],
+    ...(rulesVersion ? { rulesVersion } : {}),
+  };
+  return {
+    manifest,
+    dbqIds: [...dbqIds],
+    issues: [...issues],
+    deliverableContentionIds,
+    pendingContentionIds,
+    contentionEligibility,
+    esrCompletionStatus: computeEsrCompletionStatus(state, esrId),
+  };
 }
 
 function refreshPackages(next: WorkspaceState, esrId: string, now: string) {
   const contents = packageContents(next, esrId);
+  const rulesVersion = contents.manifest.rulesVersion;
   for (const item of Object.values(next.resultsPackagesById)) {
     if (item.esrId !== esrId || item.preparationStatus === 'closed' || item.simulatedResponse === 'awaiting-response' || item.simulatedResponse === 'accepted') continue;
     const ready = contents.issues.length === 0;
+    const partialReady = contents.deliverableContentionIds.length > 0;
     const reworkResolved = ready && ['report-fix','new-exam-requested'].includes(item.simulatedResponse ?? '');
+    const evidenceStale = Boolean(
+      item.preparedManifest && (
+        (item.preparedManifest.rulesVersion && rulesVersion && item.preparedManifest.rulesVersion !== rulesVersion) ||
+        JSON.stringify(item.preparedManifest.reports) !== JSON.stringify(contents.manifest.reports)
+      )
+    );
     next.resultsPackagesById[item.id] = update(item, {
       dbqIds: contents.dbqIds, diagnosticResultIds: contents.manifest.diagnosticResultIds, qaApprovalIds: contents.manifest.reports.map(report => report.approvalId),
       validationStatus: ready ? 'not-validated' : 'blocked', blockingReasons: contents.issues,
-      preparationStatus: ready ? 'draft' : 'blocked', preparedManifest: undefined,
+      preparationStatus: ready ? 'draft' : partialReady ? 'ready-for-review' : 'blocked',
+      preparedManifest: evidenceStale ? undefined : item.preparedManifest,
+      isStale: evidenceStale,
+      staleReason: evidenceStale ? 'Approved DBQ revision, QA rules version, or linked diagnostics changed prior to delivery.' : undefined,
+      rulesVersion,
+      esrCompletionStatus: contents.esrCompletionStatus,
       simulatedResponse: reworkResolved ? 'not-sent' : item.simulatedResponse,
       versionNumber: reworkResolved ? item.versionNumber + 1 : item.versionNumber,
     }, now);
@@ -918,7 +1098,7 @@ export function createReconciliationTask(state: WorkspaceState, packageId: Entit
 
 export function recordDeliveryReview(state: WorkspaceState, packageId: EntityId, details: string) {
   const pack = state.resultsPackagesById[packageId];
-  if (!pack || state.esrsById[pack.esrId]?.workflowClosedAt || pack.preparationStatus !== 'prepared-locally') throw new WorkflowRuleError('Prepare the package before recording delivery review.');
+  if (!pack || state.esrsById[pack.esrId]?.workflowClosedAt) throw new WorkflowRuleError('This package is closed or unavailable.');
   if (!details.trim()) throw new WorkflowRuleError('Add a review note.');
   const now = nowIso();
   const next = copyMaps(state, ['deliveryEventsById', 'activitiesById']);
@@ -930,29 +1110,29 @@ export function recordDeliveryReview(state: WorkspaceState, packageId: EntityId,
 
 export function simulatePackageTransmission(state: WorkspaceState, packageId: EntityId) {
   const pack = requirePackage(state, packageId);
-  if (pack.preparationStatus !== 'prepared-locally' || pack.validationStatus !== 'passed') throw new WorkflowRuleError('Validate and locally prepare the package before starting a simulated delivery.');
+  if (pack.preparationStatus !== 'prepared-locally' || pack.validationStatus !== 'passed') throw new WorkflowRuleError('Validate and prepare the package before starting internal delivery review.');
   if (['report-fix', 'new-exam-requested'].includes(pack.simulatedResponse ?? '')) throw new WorkflowRuleError('Complete the requested rework before resubmitting this package.');
-  if (pack.simulatedResponse === 'awaiting-response') throw new WorkflowRuleError('A simulated response is already pending for this package.');
-  if (pack.simulatedResponse === 'accepted') throw new WorkflowRuleError('This package already has a simulated accepted response.');
+  if (pack.simulatedResponse === 'awaiting-response') throw new WorkflowRuleError('An internal review response is already pending for this package.');
+  if (pack.simulatedResponse === 'accepted') throw new WorkflowRuleError('This package has already been accepted in internal review.');
   const contents = packageContents(state, pack.esrId);
   if (contents.issues[0]) throw new WorkflowRuleError(contents.issues[0]);
   if (pack.preparedManifest && JSON.stringify(pack.preparedManifest) !== JSON.stringify(contents.manifest)) throw new WorkflowRuleError('Package contents changed. Validate and prepare the current revision again.');
   const now = nowIso();
   const next = copyMaps(state, ['resultsPackagesById', 'deliveryEventsById', 'activitiesById']);
   next.resultsPackagesById[packageId] = update(pack, {
-    simulatedResponse: 'awaiting-response', simulatedResponseNote: 'Awaiting a local simulated response.',
+    simulatedResponse: 'awaiting-response', simulatedResponseNote: 'Awaiting an internal review response.',
     submissions: [...(pack.submissions ?? []), { sequence: pack.versionNumber, manifest: contents.manifest, openedAt: now }],
   }, now);
   const eventId = `delivery-event-${packageId}-simulated-transmission-${Date.now()}`;
-  next.deliveryEventsById[eventId] = { id: eventId, version: 1, createdAt: now, updatedAt: now, packageId, esrId: pack.esrId, eventType: 'simulated-transmission', recordedAt: now, actorId: 'user-operations', details: 'Simulated delivery handoff opened in this browser. Nothing was transmitted to VA.', externalState: 'not-enabled' };
-  addActivity(next, { esrId: pack.esrId, entityId: packageId, entityType: 'results-package', action: 'delivery-review-recorded', rationale: 'A simulated delivery response was requested locally; external transmission is not enabled.' }, now);
+  next.deliveryEventsById[eventId] = { id: eventId, version: 1, createdAt: now, updatedAt: now, packageId, esrId: pack.esrId, eventType: 'simulated-transmission', recordedAt: now, actorId: 'user-operations', details: 'Internal delivery review opened. Nothing was transmitted to VA.', externalState: 'not-enabled' };
+  addActivity(next, { esrId: pack.esrId, entityId: packageId, entityType: 'results-package', action: 'delivery-review-recorded', rationale: 'An internal review response was requested. External transmission is unavailable.' }, now);
   return refreshWorkItems(next, now);
 }
 
 export function recordSimulatedPackageResponse(state: WorkspaceState, packageId: EntityId, response: 'accepted' | 'report-fix' | 'new-exam-requested', details: string, targetId?: EntityId) {
   const pack = requirePackage(state, packageId);
-  if (pack.simulatedResponse !== 'awaiting-response') throw new WorkflowRuleError('Start a simulated delivery handoff before recording a response.');
-  if (!['accepted','report-fix','new-exam-requested'].includes(response) || !details.trim() || details.length > 3000) throw new WorkflowRuleError('Select and describe the simulated response.');
+  if (pack.simulatedResponse !== 'awaiting-response') throw new WorkflowRuleError('Start internal delivery review before recording a response.');
+  if (!['accepted','report-fix','new-exam-requested'].includes(response) || !details.trim() || details.length > 3000) throw new WorkflowRuleError('Select and describe the internal review response.');
   const now = nowIso();
   const keys: (keyof WorkspaceState)[] = ['resultsPackagesById', 'contentionsById', 'examinationRequirementsById', 'qaReviewsById', 'qaFindingsById', 'dbqsById', 'examinationsById', 'correctionRequestsById', 'deliveryEventsById', 'activitiesById'];
   const next = copyMaps(state, keys);
@@ -963,7 +1143,7 @@ export function recordSimulatedPackageResponse(state: WorkspaceState, packageId:
     [{ sequence: pack.versionNumber, manifest: sent, openedAt: pack.updatedAt, response: responseRecord }];
   next.resultsPackagesById[packageId] = update(pack, {
     submissions, simulatedResponse: response, simulatedResponseNote: details.trim(),
-    ...(response === 'accepted' ? {} : { preparationStatus: 'blocked' as const, validationStatus: 'blocked' as const, blockingReasons: [`Simulated ${response === 'report-fix' ? 'report correction' : 'new examination'} response needs follow-up.`] }),
+    ...(response === 'accepted' ? {} : { preparationStatus: 'blocked' as const, validationStatus: 'blocked' as const, blockingReasons: [`Internal review requested a ${response === 'report-fix' ? 'report correction' : 'new examination'}.`] }),
   }, now);
   if (response === 'accepted') {
     const acceptedContentionIds = sent.contentions;
@@ -973,12 +1153,12 @@ export function recordSimulatedPackageResponse(state: WorkspaceState, packageId:
     });
   } else if (response === 'report-fix') {
     const dbq = targetId ? state.dbqsById[targetId] : undefined;
-    if (!dbq || !sent.reports.some(report => report.dbqId === dbq.id && report.revisionId === dbq.currentVersionId)) throw new WorkflowRuleError('Select a report included in this package for the simulated correction request.');
+    if (!dbq || !sent.reports.some(report => report.dbqId === dbq.id && report.revisionId === dbq.currentVersionId)) throw new WorkflowRuleError('Select a report included in this package for the internal correction request.');
     const review = Object.values(state.qaReviewsById).find((item) => item.dbqId === dbq.id && item.status === 'approved');
     if (!review) throw new WorkflowRuleError('The selected report does not have an approved internal QA review.');
     const findingId = `finding-simulated-fix-${dbq.id}-${Date.now()}`;
     next.qaFindingsById[findingId] = { id: findingId, version: 1, createdAt: now, updatedAt: now, esrId: pack.esrId, qaReviewId: review.id, dbqId: dbq.id, sectionReference: 'Simulated delivery response', issueCategory: 'attachment', severity: 'blocking', title: 'Simulated report-fix response', supportingEvidenceIds: [], reviewerId: 'user-qa', status: 'open', comments: [details.trim()], resolutionHistory: [{ at: now, actorId: 'user-qa', status: 'open', comment: details.trim() }], origin: 'reviewer', versionId: dbq.currentVersionId };
-    next.qaReviewsById[review.id] = update(review, { findingIds: [...review.findingIds, findingId], status: 'queued', checks: [], reviewerComment: details.trim() }, now);
+    next.qaReviewsById[review.id] = update(review, { findingIds: [...review.findingIds, findingId], status: 'queued', checks: [], aiAudit: undefined, isVaReportFix: true, vaFixNote: details.trim(), reviewerComment: details.trim() }, now);
     next.dbqsById[dbq.id] = update(dbq, { status: 'ready-for-qa' }, now);
     refreshPackages(next, pack.esrId, now);
   } else {
@@ -993,8 +1173,8 @@ export function recordSimulatedPackageResponse(state: WorkspaceState, packageId:
   }
   const eventId = `delivery-event-${packageId}-simulated-response-${Date.now()}`;
   const responseLabel = response === 'accepted' ? 'accepted' : response === 'report-fix' ? 'report fix requested' : 'new examination requested';
-  next.deliveryEventsById[eventId] = { id: eventId, version: 1, createdAt: now, updatedAt: now, packageId, esrId: pack.esrId, eventType: 'simulated-response', recordedAt: now, actorId: 'user-operations', details: `Local simulated response (${responseLabel}): ${details.trim()} No VA response was received.`, externalState: 'not-enabled' };
-  addActivity(next, { esrId: pack.esrId, entityId: packageId, entityType: 'results-package', action: 'simulated-response-recorded', rationale: `Local simulated response (${responseLabel}) recorded. It does not represent an external VA response.` }, now);
+  next.deliveryEventsById[eventId] = { id: eventId, version: 1, createdAt: now, updatedAt: now, packageId, esrId: pack.esrId, eventType: 'simulated-response', recordedAt: now, actorId: 'user-operations', details: `Internal review response (${responseLabel}): ${details.trim()} No VA response was received.`, externalState: 'not-enabled' };
+  addActivity(next, { esrId: pack.esrId, entityId: packageId, entityType: 'results-package', action: 'simulated-response-recorded', rationale: `Internal review response (${responseLabel}) recorded. It does not represent an external VA response.` }, now);
   return refreshWorkItems(next, now);
 }
 
@@ -1005,8 +1185,8 @@ export function recordSimulatedContentionCancellation(state: WorkspaceState, esr
   if (esr.workflowClosedAt) throw new WorkflowRuleError('This ESR is already closed in the local workflow.');
   if (!reason.trim() || reason.length > 3000) throw new WorkflowRuleError('Record a cancellation reason.');
   if (contention.simulatedDisposition === 'cancelled') throw new WorkflowRuleError('The contention is already cancelled.');
-  if (Object.values(state.resultsPackagesById).some(item => item.esrId === esrId && item.simulatedResponse === 'awaiting-response')) throw new WorkflowRuleError('Resolve the simulated submission before recording a contention cancellation.');
-  if (contention.simulatedDisposition === 'accepted') throw new WorkflowRuleError('An accepted simulated result cannot be changed to cancelled.');
+  if (Object.values(state.resultsPackagesById).some(item => item.esrId === esrId && item.simulatedResponse === 'awaiting-response')) throw new WorkflowRuleError('Resolve the pending internal review before recording a contention cancellation.');
+  if (contention.simulatedDisposition === 'accepted') throw new WorkflowRuleError('A result accepted in internal review cannot be changed to cancelled.');
   const now = nowIso();
   const next = copyMaps(state, ['contentionsById', 'examinationsById', 'appointmentsById', 'correctionRequestsById', 'resultsPackagesById', 'deliveryEventsById', 'activitiesById']);
   next.contentionsById[contentionId] = update(contention, { simulatedDisposition: 'cancelled', simulatedDispositionNote: reason.trim() }, now);
@@ -1017,8 +1197,8 @@ export function recordSimulatedContentionCancellation(state: WorkspaceState, esr
     for (const id of exam.appointmentIds) {
       const appointment = state.appointmentsById[id];
       if (!appointment || !['held','confirmed-locally','reschedule-requested'].includes(appointment.status)) continue;
-      next.appointmentsById[id] = update(appointment, { status: 'cancelled', history: [...appointment.history,
-        { status: 'cancelled', at: now, actorId: 'user-operations', note: 'All linked contentions were cancelled in the local simulation.' }],
+      next.appointmentsById[id] = update(appointment, { status: 'cancelled', history: [...(appointment.history || []),
+        { status: 'cancelled', at: now, actorId: 'user-operations', note: 'All linked contentions were cancelled in this workspace.' }],
       }, now);
     }
   }
@@ -1026,13 +1206,13 @@ export function recordSimulatedContentionCancellation(state: WorkspaceState, esr
     const dbq = state.dbqsById[correction.dbqId];
     if (correction.esrId !== esrId || correction.status === 'closed' || !dbq || !exclusivelyCancelled(dbq.contentionIds)) continue;
     next.correctionRequestsById[correction.id] = update(correction, { status: 'closed', history: [...correction.history,
-      { status: 'closed', at: now, actorId: 'user-operations', note: 'All linked contentions were cancelled in the local simulation.' }],
+      { status: 'closed', at: now, actorId: 'user-operations', note: 'All linked contentions were cancelled in this workspace.' }],
     }, now);
   }
   const pack = Object.values(state.resultsPackagesById).filter((item) => item.esrId === esrId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   if (pack) {
     const eventId = `delivery-event-${pack.id}-cancel-${contentionId}-${Date.now()}`;
-    next.deliveryEventsById[eventId] = { id: eventId, version: 1, createdAt: now, updatedAt: now, packageId: pack.id, esrId, eventType: 'contention-cancelled', recordedAt: now, actorId: 'user-operations', details: `Simulated contention cancellation recorded locally: ${reason.trim()}`, externalState: 'not-enabled' };
+    next.deliveryEventsById[eventId] = { id: eventId, version: 1, createdAt: now, updatedAt: now, packageId: pack.id, esrId, eventType: 'contention-cancelled', recordedAt: now, actorId: 'user-operations', details: `Contention cancellation recorded in this workspace: ${reason.trim()}`, externalState: 'not-enabled' };
   }
   refreshPackages(next, esrId, now);
   if (esr.contentionIds.every(id => next.contentionsById[id]?.simulatedDisposition === 'cancelled') && pack) {
@@ -1060,14 +1240,65 @@ export function completeReconciliationTask(state: WorkspaceState, taskId: string
   return refreshWorkItems(next, now);
 }
 
+export function computeReconciliationFindings(state: WorkspaceState, esrId: string): ReconciliationFinding[] {
+  const esr = state.esrsById[esrId];
+  if (!esr) return [];
+  const findings: ReconciliationFinding[] = [];
+  const packs = Object.values(state.resultsPackagesById).filter(item => item.esrId === esrId);
+  const contentions = esr.contentionIds.map(id => state.contentionsById[id]).filter(Boolean);
+
+  for (const c of contentions) {
+    const cd = packs.map(p => p.contentionDeliveries?.[c.id]).find(Boolean);
+    if (c.simulatedDisposition === 'accepted' && cd && cd.rapTransmissionStatus !== 'sent') {
+      findings.push({ id: `rec-missing-rap-${c.id}`, kind: 'missing-result', severity: 'blocking', detail: `${c.title}: marked accepted without recorded RAP transmission.`, contentionId: c.id });
+    }
+    if (c.simulatedDisposition === 'cancelled' && cd && (cd.vaReviewOutcome === 'accepted' || cd.rapTransmissionStatus === 'sent')) {
+      findings.push({ id: `rec-cancel-${c.id}`, kind: 'cancellation-discrepancy', severity: 'blocking', detail: `${c.title}: cancelled locally despite prior RAP/outcome record.`, contentionId: c.id });
+    }
+    if (cd && cd.rapTransmissionStatus === 'failed') {
+      findings.push({ id: `rec-rap-fail-${c.id}`, kind: 'status-mismatch', severity: 'blocking', detail: `${c.title}: RAP transmission failed (${cd.lastError ?? 'unconfirmed'}) — retry RAP delivery.`, contentionId: c.id });
+    }
+    if (c.simulatedDisposition === 'rap-delivered' && cd && cd.receiptConfirmationStatus !== 'confirmed') {
+      findings.push({ id: `rec-unconfirmed-${c.id}`, kind: 'status-mismatch', severity: 'warning', detail: `${c.title}: RAP sent without confirmed receipt.`, contentionId: c.id });
+    }
+  }
+
+  // Detect duplicate identical submissions across packages
+  const seenKeys = new Set<string>();
+  for (const pack of packs) {
+    for (const sub of pack.submissions ?? []) {
+      for (const r of sub.manifest.reports) {
+        const key = `${r.dbqId}:${r.revisionId}`;
+        if (seenKeys.has(key)) {
+          findings.push({ id: `rec-dup-${pack.id}-${sub.sequence}-${r.dbqId}`, kind: 'duplicate-submission', severity: 'warning', detail: `Duplicate submission revision recorded for DBQ ${r.dbqId} (${r.revisionId}).` });
+        }
+        seenKeys.add(key);
+      }
+    }
+  }
+
+  // Check unresolved child Rework ESRs (unless original ESR is already archived post-delivery, warn/block if closing active parent)
+  for (const childId of esr.childReworkEsrIds ?? []) {
+    const child = state.esrsById[childId];
+    if (child && !child.workflowClosedAt) {
+      findings.push({ id: `rec-open-rework-${childId}`, kind: 'unresolved-rework', severity: 'warning', detail: `Linked Rework ESR ${childId} (${child.reworkDetails?.reworkRoute ?? 'pending assessment'}) is still open.` });
+    }
+  }
+
+  return findings;
+}
+
 export function closureBlockers(state: WorkspaceState, esrId: string) {
   const esr = state.esrsById[esrId];
   const contentions = (esr?.contentionIds ?? []).map(id => state.contentionsById[id]);
+  const completionStatus = computeEsrCompletionStatus(state, esrId);
+  const reconciliationBlocking = computeReconciliationFindings(state, esrId).filter(f => f.severity === 'blocking');
   return [
     ...(!esr?.aepRecordedAt ? ['A local ESR acknowledgement is required.'] : []),
-    ...(!contentions.length || contentions.some(item => !['accepted','cancelled'].includes(item?.simulatedDisposition ?? '')) ? ['Every contention needs a simulated acceptance or cancellation.'] : []),
+    ...(!contentions.length || completionStatus === 'pending' ? ['Every contention needs a delivered/accepted RAP or official cancellation.'] : []),
     ...(Object.values(state.correctionRequestsById).some(item => item.esrId === esrId && item.status !== 'closed') ? ['Resolve open correction tasks.'] : []),
     ...(pendingReconciliation(state, esrId).length ? ['Complete pending reconciliation tasks.'] : []),
+    ...(reconciliationBlocking.map(f => f.detail)),
     ...(Object.values(state.resultsPackagesById).some(item => item.esrId === esrId && ['awaiting-response','report-fix','new-exam-requested'].includes(item.simulatedResponse ?? '')) ? ['Resolve the pending simulated package response.'] : []),
   ];
 }
@@ -1081,18 +1312,24 @@ export function closeESR(state: WorkspaceState, esrId: EntityId, note: string) {
   if (!note.trim() || note.length > 3000) throw new WorkflowRuleError('Add a local closure note.');
   const now = nowIso();
   const next = copyMaps(state, ['esrsById', 'resultsPackagesById', 'deliveryEventsById', 'activitiesById']);
-  const contentions = esr.contentionIds.map(id => state.contentionsById[id]);
-  const workflowDisposition = contentions.some(item => item.simulatedDisposition === 'accepted') ? 'completed' : 'cancelled';
-  next.esrsById[esrId] = update(esr, { workflowClosedAt: now, workflowDisposition, closureNote: note.trim(), intakeStatus: 'completed' }, now);
+  const completionStatus = computeEsrCompletionStatus(next, esrId);
+  const workflowDisposition = completionStatus === 'completed' ? 'completed' : 'cancelled';
+  next.esrsById[esrId] = update(esr, { workflowClosedAt: now, workflowDisposition, esrCompletionStatus: completionStatus, closureNote: note.trim(), intakeStatus: 'completed', stageTimestamps: { ...(esr.stageTimestamps ?? {}), closedAt: now } }, now);
+  if (esr.esrType === 'rework' && state.reworkAnalyticsById) {
+    const rwAnalytic = Object.values(state.reworkAnalyticsById).find(a => a.esrId === esrId);
+    if (rwAnalytic && rwAnalytic.resolutionOutcome === 'pending') {
+      next.reworkAnalyticsById = { ...(next.reworkAnalyticsById ?? state.reworkAnalyticsById), [rwAnalytic.id]: update(rwAnalytic, { resolutionOutcome: 'resolved-accepted' }, now) };
+    }
+  }
   const pack = Object.values(state.resultsPackagesById).filter((item) => item.esrId === esrId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   for (const item of Object.values(state.resultsPackagesById).filter(item => item.esrId === esrId)) {
-    next.resultsPackagesById[item.id] = update(item, { preparationStatus: 'closed' }, now);
+    next.resultsPackagesById[item.id] = update(item, { preparationStatus: 'closed', esrCompletionStatus: completionStatus }, now);
   }
   if (pack) {
     const eventId = `delivery-event-${pack.id}-closed-${Date.now()}`;
-    next.deliveryEventsById[eventId] = { id: eventId, version: 1, createdAt: now, updatedAt: now, packageId: pack.id, esrId, eventType: 'esr-closed', recordedAt: now, actorId: 'user-operations', details: `ESR closed in this local simulation: ${note.trim()}`, externalState: 'not-enabled' };
+    next.deliveryEventsById[eventId] = { id: eventId, version: 1, createdAt: now, updatedAt: now, packageId: pack.id, esrId, eventType: 'esr-closed', recordedAt: now, actorId: 'user-operations', details: `ESR closed in this local simulation (${completionStatus}): ${note.trim()}`, externalState: 'not-enabled' };
   }
-  addActivity(next, { esrId, entityId: esrId, entityType: 'esr', action: 'esr-closed', rationale: `Local workflow closure recorded after all contention dispositions and rework checks passed. ${note.trim()}` }, now);
+  addActivity(next, { esrId, entityId: esrId, entityType: 'esr', action: 'esr-closed', rationale: `Local workflow closure recorded (${completionStatus}) after contention dispositions and reconciliation checks passed. ${note.trim()}` }, now);
   return refreshWorkItems(next, now);
 }
 
@@ -1107,3 +1344,578 @@ export function decideInsight(state: WorkspaceState, insightId: EntityId, decisi
 }
 
 export function commandTime(state: WorkspaceState) { return refreshWorkItems(state, nowIso()); }
+
+// ============================================================================
+// Stage 6 Enhancements: Contention-Level RAP, Failure/Retry, Linked Rework ESR,
+// Human Assessment Gate, Rework Root-Cause Analytics & Operational Metrics
+// ============================================================================
+
+export function uploadContentionDocuments(
+  state: WorkspaceState,
+  packageId: EntityId,
+  contentionIds: EntityId[],
+  simulateFail = false,
+) {
+  const pack = requirePackage(state, packageId);
+  if (!contentionIds.length) throw new WorkflowRuleError('Select at least one contention to upload documents.');
+  const contents = packageContents(state, pack.esrId);
+  const now = nowIso();
+  const next = copyMaps(state, ['resultsPackagesById', 'deliveryEventsById', 'activitiesById']);
+  const existingDeliveries = { ...(pack.contentionDeliveries ?? {}) };
+  const pkgUploadedKeys = new Set(pack.uploadedDocumentKeys ?? []);
+  let newUploadsCount = 0;
+
+  for (const cid of contentionIds) {
+    const elig = contents.contentionEligibility[cid];
+    if (!elig || !elig.eligible) {
+      throw new WorkflowRuleError(elig?.issues[0] ?? `Contention ${cid} is not eligible for upload (missing signed/QA-approved DBQ or diagnostics).`);
+    }
+    const prev = existingDeliveries[cid];
+    if (prev?.immutableLockedAt) {
+      throw new WorkflowRuleError(`Contention ${cid} already has an immutable delivered submission.`);
+    }
+    const docKeys = [
+      ...elig.reports.map(r => `dbq:${r.dbqId}:${r.revisionId}`),
+      ...elig.diagnosticResultIds.map(id => `diag:${id}`),
+    ];
+    const dedupedNewKeys = docKeys.filter(k => !pkgUploadedKeys.has(k));
+    const revisionIds = Object.fromEntries(elig.reports.map(r => [r.dbqId, r.revisionId]));
+    const approvalIds = Object.fromEntries(elig.reports.map(r => [r.dbqId, r.approvalId]));
+
+    if (simulateFail) {
+      existingDeliveries[cid] = {
+        contentionId: cid,
+        dbqIds: elig.dbqIds,
+        revisionIds,
+        approvalIds,
+        diagnosticResultIds: elig.diagnosticResultIds,
+        evidenceDigest: elig.evidenceDigest,
+        rulesVersion: elig.rulesVersion,
+        uploadedDocumentKeys: prev?.uploadedDocumentKeys ?? [],
+        documentUploadStatus: prev?.documentUploadStatus === 'uploaded' ? 'uploaded' : 'failed',
+        rapTransmissionStatus: prev?.rapTransmissionStatus ?? 'not-sent',
+        receiptConfirmationStatus: prev?.receiptConfirmationStatus ?? 'pending',
+        vaReviewOutcome: prev?.vaReviewOutcome ?? 'pending',
+        reconciliationStatus: 'discrepancy',
+        lastError: 'Simulated eFolder document upload failure; retry upload without losing QA lock.',
+        uploadAttempts: (prev?.uploadAttempts ?? 0) + 1,
+        rapAttempts: prev?.rapAttempts ?? 0,
+        documentUploadedAt: prev?.documentUploadedAt,
+      };
+      const evId = `delivery-event-${pack.id}-upfail-${cid}-${Date.now()}-${++activitySequence}`;
+      next.deliveryEventsById[evId] = { id: evId, version: 1, createdAt: now, updatedAt: now, packageId: pack.id, esrId: pack.esrId, eventType: 'document-upload-failed', recordedAt: now, actorId: 'user-delivery', details: `Simulated document upload failure for contention ${cid}.`, externalState: 'not-enabled' };
+    } else {
+      dedupedNewKeys.forEach(k => { pkgUploadedKeys.add(k); newUploadsCount += 1; });
+      existingDeliveries[cid] = {
+        contentionId: cid,
+        dbqIds: elig.dbqIds,
+        revisionIds,
+        approvalIds,
+        diagnosticResultIds: elig.diagnosticResultIds,
+        evidenceDigest: elig.evidenceDigest,
+        rulesVersion: elig.rulesVersion,
+        uploadedDocumentKeys: docKeys,
+        documentUploadStatus: 'uploaded',
+        rapTransmissionStatus: prev?.rapTransmissionStatus ?? 'not-sent',
+        receiptConfirmationStatus: prev?.receiptConfirmationStatus ?? 'pending',
+        vaReviewOutcome: prev?.vaReviewOutcome ?? 'pending',
+        reconciliationStatus: prev?.reconciliationStatus ?? 'pending',
+        lastError: undefined,
+        uploadAttempts: (prev?.uploadAttempts ?? 0) + (dedupedNewKeys.length > 0 || prev?.documentUploadStatus !== 'uploaded' ? 1 : 0),
+        rapAttempts: prev?.rapAttempts ?? 0,
+        documentUploadedAt: prev?.documentUploadedAt ?? now,
+      };
+      const evId = `delivery-event-${pack.id}-up-${cid}-${Date.now()}-${++activitySequence}`;
+      next.deliveryEventsById[evId] = { id: evId, version: 1, createdAt: now, updatedAt: now, packageId: pack.id, esrId: pack.esrId, eventType: 'document-uploaded', recordedAt: now, actorId: 'user-delivery', details: `Simulated VBMS eFolder upload recorded (${docKeys.length} versioned document(s); ${dedupedNewKeys.length} newly uploaded, ${docKeys.length - dedupedNewKeys.length} deduplicated). External upload disabled.`, externalState: 'not-enabled' };
+    }
+  }
+
+  next.resultsPackagesById[pack.id] = update(pack, {
+    contentionDeliveries: existingDeliveries,
+    uploadedDocumentKeys: [...pkgUploadedKeys],
+    isStale: false,
+    staleReason: undefined,
+    rulesVersion: contents.manifest.rulesVersion,
+  }, now);
+  addActivity(next, { esrId: pack.esrId, entityId: pack.id, entityType: 'results-package', action: 'document-upload-recorded', rationale: simulateFail ? `Simulated upload failure recorded for ${contentionIds.length} contention(s).` : `Uploaded ${newUploadsCount} new revision-locked document(s) for ${contentionIds.length} contention(s).` }, now);
+  return refreshWorkItems(next, now);
+}
+
+export function sendContentionRap(
+  state: WorkspaceState,
+  packageId: EntityId,
+  contentionIds: EntityId[],
+  simulateFail = false,
+) {
+  const pack = requirePackage(state, packageId);
+  if (!contentionIds.length) throw new WorkflowRuleError('Select at least one contention for RAP transmission.');
+  const contents = packageContents(state, pack.esrId);
+  const now = nowIso();
+  const next = copyMaps(state, ['resultsPackagesById', 'contentionsById', 'esrsById', 'deliveryEventsById', 'activitiesById']);
+  const deliveries = { ...(pack.contentionDeliveries ?? {}) };
+  const reportsMap = new Map<string, PackageManifest['reports'][number]>();
+  const diagSet = new Set<string>();
+
+  for (const cid of contentionIds) {
+    const elig = contents.contentionEligibility[cid];
+    if (!elig || !elig.eligible) {
+      throw new WorkflowRuleError(elig?.issues[0] ?? `Contention ${cid} is not eligible for RAP delivery.`);
+    }
+    const rec = deliveries[cid];
+    if (!rec || rec.documentUploadStatus !== 'uploaded') {
+      throw new WorkflowRuleError(`Document upload must succeed for contention ${cid} before sending RAP.`);
+    }
+    if (rec.rapTransmissionStatus === 'sent' && rec.receiptConfirmationStatus === 'confirmed') {
+      throw new WorkflowRuleError(`Duplicate RAP blocked: RAP for contention ${cid} is already sent and confirmed.`);
+    }
+    elig.reports.forEach(r => reportsMap.set(r.dbqId, r));
+    elig.diagnosticResultIds.forEach(id => diagSet.add(id));
+
+    if (simulateFail) {
+      deliveries[cid] = {
+        ...rec,
+        rapTransmissionStatus: 'failed',
+        receiptConfirmationStatus: 'failed',
+        reconciliationStatus: 'discrepancy',
+        lastError: 'Simulated RAP transmission failure (uploaded documents remain preserved for RAP-only retry).',
+        rapAttempts: rec.rapAttempts + 1,
+      };
+      const evId = `delivery-event-${pack.id}-rapfail-${cid}-${Date.now()}-${++activitySequence}`;
+      next.deliveryEventsById[evId] = { id: evId, version: 1, createdAt: now, updatedAt: now, packageId: pack.id, esrId: pack.esrId, eventType: 'rap-transmission-failed', recordedAt: now, actorId: 'user-delivery', details: `Simulated RAP transmission failed for contention ${cid}; documents remain uploaded for retry.`, externalState: 'not-enabled' };
+    } else {
+      deliveries[cid] = {
+        ...rec,
+        rapTransmissionStatus: 'sent',
+        receiptConfirmationStatus: 'confirmed',
+        reconciliationStatus: 'reconciled',
+        lastError: undefined,
+        rapAttempts: rec.rapAttempts + 1,
+        rapSentAt: now,
+        receiptConfirmedAt: now,
+        immutableLockedAt: now,
+      };
+      const cont = next.contentionsById[cid];
+      if (cont && cont.simulatedDisposition !== 'cancelled') {
+        next.contentionsById[cid] = update(cont, { simulatedDisposition: 'rap-delivered', simulatedDispositionNote: 'Simulated contention-level RAP sent and receipt confirmed locally.' }, now);
+      }
+      const evId = `delivery-event-${pack.id}-rap-${cid}-${Date.now()}-${++activitySequence}`;
+      next.deliveryEventsById[evId] = { id: evId, version: 1, createdAt: now, updatedAt: now, packageId: pack.id, esrId: pack.esrId, eventType: 'rap-transmitted', recordedAt: now, actorId: 'user-delivery', details: `Simulated RAP transmitted and receipt confirmed for contention ${cid}. External DAS transmission is not enabled.`, externalState: 'not-enabled' };
+    }
+  }
+
+  let nextSubmissions = [...(pack.submissions ?? [])];
+  if (!simulateFail) {
+    const manifest: PackageManifest = {
+      contentions: [...contentionIds],
+      reports: [...reportsMap.values()],
+      diagnosticResultIds: [...diagSet],
+      ...(contents.manifest.rulesVersion ? { rulesVersion: contents.manifest.rulesVersion } : {}),
+    };
+    nextSubmissions.push({
+      sequence: nextSubmissions.length + 1,
+      manifest,
+      openedAt: now,
+      contentionIds: [...contentionIds],
+      documentUploadStatus: 'uploaded',
+      rapTransmissionStatus: 'sent',
+      receiptConfirmationStatus: 'confirmed',
+    });
+  }
+
+  const completion = computeEsrCompletionStatus({ ...next, resultsPackagesById: { ...next.resultsPackagesById, [pack.id]: { ...pack, contentionDeliveries: deliveries, submissions: nextSubmissions } } }, pack.esrId);
+  const autoAcceptLegacy = !simulateFail && completion === 'completed' && pack.simulatedResponse === 'awaiting-response';
+  next.resultsPackagesById[pack.id] = update(pack, {
+    contentionDeliveries: deliveries,
+    submissions: nextSubmissions,
+    esrCompletionStatus: completion,
+    ...(autoAcceptLegacy ? { simulatedResponse: 'accepted' as const, simulatedResponseNote: 'Confirmed via contention-level RAP delivery.' } : {}),
+  }, now);
+  const esr = next.esrsById[pack.esrId];
+  if (esr) {
+    next.esrsById[esr.id] = update(esr, {
+      esrCompletionStatus: completion,
+      stageTimestamps: { ...(esr.stageTimestamps ?? {}), deliveredAt: simulateFail ? esr.stageTimestamps?.deliveredAt : now },
+    }, now);
+  }
+  addActivity(next, { esrId: pack.esrId, entityId: pack.id, entityType: 'results-package', action: 'rap-transmitted', rationale: simulateFail ? `Simulated RAP failure on ${contentionIds.length} contention(s); upload preserved.` : `Simulated RAP confirmed for ${contentionIds.length} contention(s); ESR status is ${completion}.` }, now);
+  return refreshWorkItems(next, now);
+}
+
+export function createLinkedReworkESR(
+  state: WorkspaceState,
+  input: {
+    originalEsrId: EntityId;
+    affectedContentionIds: EntityId[];
+    reworkCategory: 'insufficient' | 'clarification' | 'both';
+    vaSpecialInstructions: string;
+    previousPackageId?: EntityId;
+    reworkRequestKey?: string;
+  },
+  actorId = 'user-delivery',
+) {
+  const originalEsr = state.esrsById[input.originalEsrId];
+  if (!originalEsr) throw new WorkflowRuleError('The linked original ESR could not be found.');
+  if (!input.affectedContentionIds.length) throw new WorkflowRuleError('Select one or more affected contentions for the Rework ESR.');
+  if (!['insufficient', 'clarification', 'both'].includes(input.reworkCategory)) throw new WorkflowRuleError('Select a valid VA rework category.');
+  const instructions = input.vaSpecialInstructions.trim();
+  if (!instructions || instructions.length > 3000) throw new WorkflowRuleError('Provide VA rework special instructions.');
+
+  const invalidConts = input.affectedContentionIds.filter(cid => !originalEsr.contentionIds.includes(cid));
+  if (invalidConts.length) throw new WorkflowRuleError('All selected contentions must belong to the original ESR.');
+
+  // Duplicate Rework ESR guard
+  const sortedCids = [...new Set(input.affectedContentionIds)].sort();
+  const normInstr = instructions.toLowerCase();
+  const existingChildren = (originalEsr.childReworkEsrIds ?? []).map(id => state.esrsById[id]).filter(Boolean);
+  const duplicate = existingChildren.find(child => {
+    const rd = child.reworkDetails;
+    if (!rd) return false;
+    if (input.reworkRequestKey && rd.reworkRequestKey === input.reworkRequestKey) return true;
+    return (
+      !child.workflowClosedAt &&
+      rd.reworkCategory === input.reworkCategory &&
+      rd.vaSpecialInstructions.toLowerCase() === normInstr &&
+      JSON.stringify([...rd.affectedContentionIds].sort()) === JSON.stringify(sortedCids)
+    );
+  });
+  if (duplicate) {
+    throw new WorkflowRuleError(`Duplicate Rework ESR blocked: active rework ${duplicate.id} already tracks these contentions and instructions.`);
+  }
+
+  const now = nowIso();
+  const reworkSeq = existingChildren.length + 1;
+  const reworkEsrId = `${originalEsr.id}-rw-${reworkSeq}-${Date.now()}`;
+  const next = copyMaps(state, ['esrsById', 'contentionsById', 'deliveryEventsById', 'activitiesById', 'reworkAnalyticsById']);
+  if (!next.reworkAnalyticsById) next.reworkAnalyticsById = {};
+
+  const reworkContentionIds: EntityId[] = [];
+  const affectedDbqIds = new Set<EntityId>();
+  const submittedRevisionIds: Record<EntityId, EntityId> = {};
+  const dbqFormTypes = new Set<string>();
+  const allDocIds = new Set<EntityId>();
+
+  for (const origCid of sortedCids) {
+    const origCont = state.contentionsById[origCid];
+    if (!origCont) continue;
+    const rwCid = `${reworkEsrId}-${origCid}`;
+    reworkContentionIds.push(rwCid);
+    origCont.evidenceDocumentIds.forEach(d => allDocIds.add(d));
+    next.contentionsById[rwCid] = {
+      id: rwCid,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+      esrId: reworkEsrId,
+      title: origCont.title,
+      diagnosticCode: origCont.diagnosticCode,
+      evidenceDocumentIds: [...origCont.evidenceDocumentIds],
+      examinationRequirementIds: [],
+      status: 'in-review',
+      simulatedDisposition: 'pending',
+    };
+    const origDbqs = Object.values(state.dbqsById).filter(d => d.esrId === originalEsr.id && d.contentionIds.includes(origCid));
+    for (const d of origDbqs) {
+      affectedDbqIds.add(d.id);
+      submittedRevisionIds[d.id] = d.signedVersionId ?? d.currentVersionId;
+      dbqFormTypes.add(d.formType);
+    }
+  }
+
+  next.esrsById[reworkEsrId] = {
+    id: reworkEsrId,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    veteranId: originalEsr.veteranId,
+    receivedAt: now,
+    dueAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    contentionIds: reworkContentionIds,
+    evidenceDocumentIds: [...allDocIds],
+    priority: 'urgent',
+    intakeStatus: 'ready-for-triage',
+    externalState: 'not-enabled',
+    sourceReference: `${originalEsr.sourceReference} [REWORK #${reworkSeq}]`,
+    receiptStatus: 'received',
+    receiptReference: `AEP-RW-${reworkEsrId}`,
+    aepRecordedAt: now,
+    isSimulated: originalEsr.isSimulated,
+    esrType: 'rework',
+    linkedOriginalEsrId: originalEsr.id,
+    esrCompletionStatus: 'pending',
+    reworkDetails: {
+      originalEsrId: originalEsr.id,
+      affectedContentionIds: sortedCids,
+      reworkContentionIds,
+      affectedDbqIds: [...affectedDbqIds],
+      submittedRevisionIds,
+      previousPackageId: input.previousPackageId,
+      reworkSequence: reworkSeq,
+      reworkCategory: input.reworkCategory,
+      vaSpecialInstructions: instructions,
+      requestReceivedAt: now,
+      acknowledgedAt: now,
+      assessmentStatus: 'pending-assessment',
+      reworkRequestKey: input.reworkRequestKey,
+    },
+    stageTimestamps: { intakeReceivedAt: now },
+  };
+
+  // Keep original ESR completion history untouched; only append child link
+  next.esrsById[originalEsr.id] = update(originalEsr, {
+    childReworkEsrIds: [...(originalEsr.childReworkEsrIds ?? []), reworkEsrId],
+  }, now);
+
+  // Heuristic advisory suggestion (AI can enrich without modifying rules/prompts)
+  const lower = instructions.toLowerCase();
+  const suggestedDeficiency = lower.includes('rom') || lower.includes('measurement') || lower.includes('degree')
+    ? 'missing-measurement'
+    : lower.includes('contradict') || lower.includes('inconsisten')
+      ? 'contradictory-findings'
+      : lower.includes('diagnostic') || lower.includes('lab') || lower.includes('x-ray')
+        ? 'missing-diagnostic'
+        : lower.includes('upload') || lower.includes('pdf') || lower.includes('technical')
+          ? 'technical-upload'
+          : 'incomplete-rationale';
+  const suggestedStage = suggestedDeficiency === 'technical-upload' ? 'VA Delivery & Review' : 'Clinical Evaluation';
+
+  const analyticsId = `rw-analytics-${reworkEsrId}`;
+  next.reworkAnalyticsById[analyticsId] = {
+    id: analyticsId,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    esrId: reworkEsrId,
+    originalEsrId: originalEsr.id,
+    packageId: input.previousPackageId,
+    affectedContentionIds: sortedCids,
+    affectedDbqIds: [...affectedDbqIds],
+    dbqFormTypes: [...dbqFormTypes],
+    vaReworkReason: instructions,
+    reworkCategory: input.reworkCategory,
+    deficiencyCategory: suggestedDeficiency,
+    responsibleStage: 'Pending Assessment',
+    correctiveAction: 'Pending reviewer assessment.',
+    resolutionOutcome: 'pending',
+    aiSuggestion: {
+      suggestedDeficiencyCategory: suggestedDeficiency,
+      suggestedResponsibleStage: suggestedStage,
+      recommendation: `Review prior V1 DBQ remarks/measurements against VA instructions (${input.reworkCategory}).`,
+      advisoryOnly: true,
+    },
+  };
+
+  if (input.previousPackageId && state.deliveryEventsById) {
+    const evId = `delivery-event-${input.previousPackageId}-rw-${Date.now()}`;
+    next.deliveryEventsById[evId] = { id: evId, version: 1, createdAt: now, updatedAt: now, packageId: input.previousPackageId, esrId: originalEsr.id, eventType: 'rework-esr-received', recordedAt: now, actorId, details: `Linked Rework ESR ${reworkEsrId} (${input.reworkCategory}) received for ${sortedCids.length} contention(s). Original ESR preserved.`, externalState: 'not-enabled' };
+  }
+  addActivity(next, { esrId: reworkEsrId, entityId: reworkEsrId, entityType: 'esr', action: 'rework-esr-received', rationale: `Linked Rework ESR created referencing ${originalEsr.id} (${input.reworkCategory}, ${sortedCids.length} contention(s)). Pending VA Rework Inbox assessment.` }, now);
+  return { state: refreshWorkItems(next, now), reworkEsrId, analyticsId };
+}
+
+export function assessReworkESR(
+  state: WorkspaceState,
+  reworkEsrId: EntityId,
+  decision: {
+    route: 'report-correction' | 'additional-exam-deferred' | 'technical-delivery-issue' | 'pending-clarification';
+    assessmentNote: string;
+    deficiencyCategory?: ReworkAnalyticsRecord['deficiencyCategory'];
+    responsibleStage?: ReworkAnalyticsRecord['responsibleStage'];
+    correctiveAction?: string;
+    clarificationRequestNote?: string;
+  },
+  actorId = 'user-delivery',
+) {
+  const esr = state.esrsById[reworkEsrId];
+  if (!esr || esr.esrType !== 'rework' || !esr.reworkDetails) {
+    throw new WorkflowRuleError('Select an active linked Rework ESR.');
+  }
+  if (!decision.assessmentNote.trim()) {
+    throw new WorkflowRuleError('Enter an assessment justification before routing the Rework ESR.');
+  }
+  if (decision.route === 'pending-clarification' && !decision.clarificationRequestNote?.trim()) {
+    throw new WorkflowRuleError('Specify what needs VA clarification.');
+  }
+
+  const now = nowIso();
+  const next = copyMaps(state, ['esrsById', 'contentionsById', 'examinationRequirementsById', 'examinationsById', 'appointmentsById', 'dbqsById', 'dbqVersionsById', 'resultsPackagesById', 'reworkAnalyticsById', 'activitiesById']);
+  if (!next.reworkAnalyticsById) next.reworkAnalyticsById = {};
+
+  const rd = esr.reworkDetails;
+  const updatedRd = {
+    ...rd,
+    assessmentStatus: 'assessed' as const,
+    reworkRoute: decision.route,
+    assessmentNote: decision.assessmentNote.trim(),
+    assessedBy: actorId,
+    assessedAt: now,
+    clarificationRequestNote: decision.clarificationRequestNote?.trim(),
+  };
+
+  next.esrsById[reworkEsrId] = update(esr, { reworkDetails: updatedRd }, now);
+
+  // Update analytics root-cause fields
+  const analytics = Object.values(next.reworkAnalyticsById).find(a => a.esrId === reworkEsrId);
+  if (analytics) {
+    next.reworkAnalyticsById[analytics.id] = update(analytics, {
+      ...(decision.deficiencyCategory ? { deficiencyCategory: decision.deficiencyCategory } : {}),
+      ...(decision.responsibleStage ? { responsibleStage: decision.responsibleStage } : {}),
+      correctiveAction: decision.correctiveAction?.trim() || decision.assessmentNote.trim(),
+      resolutionOutcome: decision.route === 'additional-exam-deferred' ? 'deferred' : 'pending',
+    }, now);
+  }
+
+  if (decision.route === 'report-correction') {
+    // Spawn Stage 4 correction DBQ revision(s) per affected DBQ (preserving V1 immutable)
+    const clonedDbqs: EntityId[] = [];
+    const origDbqs = rd.affectedDbqIds.map(id => state.dbqsById[id]).filter(Boolean);
+    // Group by original examination or create one Rework Examination per orig DBQ set
+    const origDbqGroups = origDbqs.length ? origDbqs : [];
+    const rwReqId = `req-${reworkEsrId}`;
+    const firstOrigExam = origDbqGroups[0] ? state.examinationsById[origDbqGroups[0].examinationId] : undefined;
+    const rwExamId = `exam-${reworkEsrId}`;
+    const rwApptId = `appt-${reworkEsrId}`;
+    const origAppt = firstOrigExam?.appointmentIds.map(id => state.appointmentsById[id]).find(Boolean);
+
+    next.examinationRequirementsById[rwReqId] = {
+      id: rwReqId, version: 1, createdAt: now, updatedAt: now, esrId: reworkEsrId,
+      contentionIds: [...rd.reworkContentionIds], title: `Rework Assessment (${rd.reworkCategory})`,
+      examinationType: origDbqGroups[0]?.formType ?? 'Rework Report Review',
+      requiredSpecialties: [], requiredCredentials: [], permittedModalities: [origAppt?.modality ?? 'in-person'],
+      requestedDbqTypes: [...new Set(origDbqGroups.map(d => d.formType))],
+      requestedDiagnostics: [], selectedModality: origAppt?.modality ?? 'in-person',
+      dbqIds: [], diagnosticOrderIds: [], status: 'scheduled',
+    };
+    next.appointmentsById[rwApptId] = {
+      id: rwApptId, version: 1, createdAt: now, updatedAt: now, esrId: reworkEsrId,
+      examinationId: rwExamId, examinerId: firstOrigExam?.examinerId ?? origAppt?.examinerId ?? 'exam-001',
+      examinerName: origAppt?.examinerName ?? 'Assigned Rework Examiner',
+      facilityId: origAppt?.facilityId ?? 'fac-cle',
+      startsAt: origAppt?.startsAt ?? now, endsAt: origAppt?.endsAt ?? now,
+      modality: origAppt?.modality ?? 'in-person', status: 'completed',
+      accessibilityNeeds: [], history: [],
+    };
+
+    for (const origDbq of origDbqGroups) {
+      const rwDbqId = `${reworkEsrId}-dbq-${origDbq.id}`;
+      const origVer = state.dbqVersionsById[rd.submittedRevisionIds[origDbq.id] ?? origDbq.currentVersionId];
+      const rwVerId = `${rwDbqId}-v2`;
+      const mappedConts = origDbq.contentionIds
+        .map(ocid => `${reworkEsrId}-${ocid}`)
+        .filter(cid => next.contentionsById[cid]);
+      const finalContIds = mappedConts.length ? mappedConts : [...rd.reworkContentionIds];
+      const baseValues: FieldValues = {
+        ...(origVer?.values ?? origDbq.values),
+        remarks: `${String((origVer?.values ?? origDbq.values).remarks ?? '').trim()}\n[VA Rework #${rd.reworkSequence} (${rd.reworkCategory})]: ${rd.vaSpecialInstructions}`.trim(),
+      };
+      next.dbqVersionsById[rwVerId] = {
+        id: rwVerId, version: 1, createdAt: now, updatedAt: now, dbqId: rwDbqId,
+        versionNumber: (origVer?.versionNumber ?? 1) + 1, formVersion: origDbq.formVersion,
+        values: baseValues, authoredBy: actorId,
+        changeSummary: `Rework revision referencing ${origDbq.id} (${origVer?.id ?? 'V1'}): ${rd.vaSpecialInstructions}`,
+        createdFor: 'correction-resubmission',
+      };
+      next.dbqsById[rwDbqId] = {
+        id: rwDbqId, version: 1, createdAt: now, updatedAt: now, examinationId: rwExamId,
+        esrId: reworkEsrId, contentionIds: finalContIds, formType: origDbq.formType, formVersion: origDbq.formVersion,
+        catalogReference: origDbq.catalogReference, values: baseValues, versionIds: [rwVerId],
+        currentVersionId: rwVerId, status: 'in-progress', validationErrors: [], localReviewState: 'not-ready',
+      };
+      clonedDbqs.push(rwDbqId);
+    }
+
+    next.examinationRequirementsById[rwReqId].dbqIds = clonedDbqs;
+    next.examinationsById[rwExamId] = {
+      id: rwExamId, version: 1, createdAt: now, updatedAt: now, esrId: reworkEsrId,
+      requirementIds: [rwReqId], contentionIds: [...rd.reworkContentionIds], requiredDbqIds: clonedDbqs,
+      examinerId: firstOrigExam?.examinerId ?? origAppt?.examinerId ?? 'exam-001',
+      appointmentIds: [rwApptId], diagnosticOrderIds: [], status: 'awaiting-clinical-review',
+    };
+    for (const rwCid of rd.reworkContentionIds) {
+      if (next.contentionsById[rwCid]) {
+        next.contentionsById[rwCid] = update(next.contentionsById[rwCid], { status: 'approved-for-exam', examinationRequirementIds: [rwReqId] }, now);
+      }
+    }
+  } else if (decision.route === 'technical-delivery-issue') {
+    // Route directly to Stage 6 delivery package creation reusing existing approved DBQ refs cleanly via copied approved reports
+    const pkgId = `pkg-${reworkEsrId}-${Date.now()}`;
+    next.resultsPackagesById[pkgId] = {
+      id: pkgId, version: 1, createdAt: now, updatedAt: now, esrId: reworkEsrId,
+      dbqIds: [...rd.affectedDbqIds], diagnosticResultIds: [], qaApprovalIds: [],
+      validationStatus: 'not-validated', preparationStatus: 'ready-for-review',
+      externalState: 'not-enabled', blockingReasons: [], versionNumber: 1,
+      esrCompletionStatus: 'pending',
+    };
+  }
+
+  addActivity(next, { esrId: reworkEsrId, entityId: reworkEsrId, entityType: 'esr', action: 'rework-esr-assessed', actorId, rationale: `Rework ESR assessed and routed to '${decision.route}': ${decision.assessmentNote.trim()}` }, now);
+  return refreshWorkItems(next, now);
+}
+
+export function updateReworkRootCause(
+  state: WorkspaceState,
+  analyticsId: EntityId,
+  patch: Partial<Pick<ReworkAnalyticsRecord, 'deficiencyCategory' | 'responsibleStage' | 'correctiveAction' | 'resolutionOutcome'>>,
+) {
+  const analyticsMap = state.reworkAnalyticsById ?? {};
+  const existing = analyticsMap[analyticsId];
+  if (!existing) throw new WorkflowRuleError('Rework analytics record not found.');
+  const now = nowIso();
+  const next = copyMaps(state, ['reworkAnalyticsById', 'activitiesById']);
+  next.reworkAnalyticsById = { ...analyticsMap, [analyticsId]: update<ReworkAnalyticsRecord>(existing, patch, now) };
+  addActivity(next, { esrId: existing.esrId, entityId: analyticsId, entityType: 'esr', action: 'rework-root-cause-updated', rationale: `Updated root-cause analysis: ${patch.deficiencyCategory ?? existing.deficiencyCategory} / ${patch.responsibleStage ?? existing.responsibleStage} (${patch.resolutionOutcome ?? existing.resolutionOutcome}).` }, now);
+  return refreshWorkItems(next, now);
+}
+
+export function computeOperationalMetrics(state: WorkspaceState) {
+  const esrs = Object.values(state.esrsById);
+  const originalEsrs = esrs.filter(e => e.esrType !== 'rework');
+  const reworkEsrs = esrs.filter(e => e.esrType === 'rework');
+  const analytics = Object.values(state.reworkAnalyticsById ?? {});
+
+  const avgHours = (pairs: Array<[string | undefined, string | undefined]>) => {
+    const diffs = pairs
+      .map(([a, b]) => (a && b ? (Date.parse(b) - Date.parse(a)) / 3_600_000 : NaN))
+      .filter(v => Number.isFinite(v) && v >= 0);
+    return diffs.length ? Number((diffs.reduce((s, x) => s + x, 0) / diffs.length).toFixed(2)) : null;
+  };
+
+  const originalDurationHours = avgHours(originalEsrs.map(e => [e.aepRecordedAt ?? e.receivedAt, e.workflowClosedAt ?? e.stageTimestamps?.deliveredAt]));
+  const reworkDurationHours = avgHours(reworkEsrs.map(e => [e.reworkDetails?.requestReceivedAt ?? e.receivedAt, e.workflowClosedAt ?? e.stageTimestamps?.deliveredAt]));
+  const qaDurationHours = avgHours(
+    Object.values(state.qaReviewsById).map(r => [r.qaProcessing?.queuedAt ?? r.createdAt, r.approvedAt]),
+  );
+  const clinicalDurationHours = avgHours(
+    Object.values(state.dbqsById).map(d => [d.createdAt, d.reviewedAt]),
+  );
+  const deliveryDurationHours = avgHours(
+    Object.values(state.resultsPackagesById).map(p => [p.createdAt, p.submissions?.at(-1)?.openedAt ?? (p.preparationStatus === 'closed' ? p.updatedAt : undefined)]),
+  );
+
+  const recurringByCategory: Record<string, number> = {};
+  const recurringByDbqForm: Record<string, number> = {};
+  for (const a of analytics) {
+    recurringByCategory[a.deficiencyCategory] = (recurringByCategory[a.deficiencyCategory] ?? 0) + 1;
+    for (const f of a.dbqFormTypes) {
+      recurringByDbqForm[f] = (recurringByDbqForm[f] ?? 0) + 1;
+    }
+  }
+
+  const deliveredOrigCount = originalEsrs.filter(e => e.esrCompletionStatus === 'completed' || e.workflowDisposition === 'completed' || (state.resultsPackagesById && Object.values(state.resultsPackagesById).some(p => p.esrId === e.id && (p.submissions?.length ?? 0) > 0))).length;
+  return {
+    isInternalDemonstrationMetrics: true as const,
+    disclaimer: 'Internal demonstration operational metrics only — not official VA CPARS or contractual QASP performance scores.',
+    originalEsrCount: originalEsrs.length,
+    reworkEsrCount: reworkEsrs.length,
+    reworkFrequencyRate: deliveredOrigCount > 0 ? Number((reworkEsrs.length / deliveredOrigCount).toFixed(3)) : 0,
+    pendingExaminationCount: Object.values(state.examinationsById).filter(ex => !['completed', 'cancelled'].includes(ex.status)).length,
+    durationsHours: {
+      originalEsr: originalDurationHours,
+      reworkEsr: reworkDurationHours,
+      clinicalEvaluation: clinicalDurationHours,
+      internalQa: qaDurationHours,
+      delivery: deliveryDurationHours,
+    },
+    recurringByCategory,
+    recurringByDbqForm,
+  };
+}

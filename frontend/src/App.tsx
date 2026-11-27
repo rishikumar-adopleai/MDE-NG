@@ -1,10 +1,11 @@
+import { HeadingText } from './HeadingText';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, AlertCircle, CheckCircle2, ChevronRight, FileSearch, Inbox, Search, X, Hospital } from 'lucide-react';
+import { AlertCircle, CheckCircle2, X, Hospital } from 'lucide-react';
 import { WorkspaceProvider, useWorkspace } from './context/WorkspaceContext';
 import { getWorkItemsByStage, searchESRs } from './domain/selectors';
 import { AccountAccess } from './context/DemoSignIn';
 import type { IntakeStatus } from './domain/model';
-import { CasePanel } from './stages/shared';
+import { ReadOnlyStageQueue } from './stages/ReadOnlyStageQueue';
 import { IntakePage } from './stages/IntakePage';
 import { TriagePage } from './stages/TriagePage';
 import { SchedulingPage } from './stages/SchedulingPage';
@@ -12,15 +13,18 @@ import { ClinicalPage } from './stages/ClinicalPage';
 import { QAPage } from './stages/QAPage';
 import { DeliveryPage } from './stages/DeliveryPage';
 import { SourceStageRecords } from './stages/SourceStageRecords';
-import { stageCopy, type StageKey } from './stages/model';
+import type { StageKey } from './stages/model';
 import { dateLabel, formatActivityLabel, formatWorkspaceCopy, toCaseItem } from './stages/presentation';
 import { WorkspaceNavigation, WorkspaceTopbar } from './WorkspaceNavigation';
-import { stageFromSearch, stageHref } from './workspaceRoutes';
+import { readWorkspaceLocation, workspaceHref, type WorkspacePage } from './workspaceRoutes';
+import { DashboardPage } from './DashboardPage';
 
 function WorkspaceApp() {
   const { state, loading, storageError, runtime } = useWorkspace();
-  const [stage, setStage] = useState<StageKey>(() => stageFromSearch(window.location.search));
-  const [selectedId, setSelectedId] = useState('');
+  const initialLocation = readWorkspaceLocation(window.location);
+  const [page, setPage] = useState<WorkspacePage>(initialLocation.page);
+  const [stage, setStage] = useState<StageKey>(() => initialLocation.page === 'Dashboard' ? 'Intake' : initialLocation.page);
+  const [selectedId, setSelectedId] = useState(initialLocation.esrId ?? '');
   const [selectedEntityId, setSelectedEntityId] = useState<string>();
   const [intakeStatus, setIntakeStatus] = useState<IntakeStatus | 'all'>('all');
   const [stageView, setStageView] = useState<'queue' | 'source'>();
@@ -34,9 +38,11 @@ function WorkspaceApp() {
   const pageScrollRef = useRef<HTMLDivElement>(null);
   const focusStageHeading = useRef(false);
 
-  const resetStage = useCallback((name: StageKey) => {
+  const resetPage = useCallback((target: WorkspacePage, esrId?: string) => {
     focusStageHeading.current = true;
-    setStage(name);
+    setPage(target);
+    setStage(target === 'Dashboard' ? 'Intake' : target);
+    setSelectedId(esrId ?? '');
     setStageView(undefined);
     setSelectedEntityId(undefined);
     setQueueFilter('all');
@@ -46,10 +52,13 @@ function WorkspaceApp() {
   }, []);
 
   useEffect(() => {
-    const onPopState = () => resetStage(stageFromSearch(window.location.search));
+    const onPopState = () => {
+      const route = readWorkspaceLocation(window.location);
+      resetPage(route.page, route.esrId);
+    };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [resetStage]);
+  }, [resetPage]);
 
   useEffect(() => {
     const scroll = pageScrollRef.current;
@@ -79,15 +88,15 @@ function WorkspaceApp() {
     };
   }, [activityOpen, stage]);
 
-  const selectStage = (name: StageKey) => {
-    if (stage === name) {
+  const navigateTo = (target: WorkspacePage, esrId?: string) => {
+    if (page === target && (esrId ?? '') === selectedId) {
       setMobileNav(false);
       return;
     }
-    window.history.pushState(null, '', stageHref(name, window.location.search));
-    resetStage(name);
+    window.history.pushState(null, '', workspaceHref(target, esrId));
+    resetPage(target, esrId);
   };
-  const selectESR = setSelectedId;
+  const selectESR = (id: string) => navigateTo(page === 'Dashboard' ? 'Intake' : page, id || undefined);
 
   if (loading) return <div className="app-backdrop"><div className="workspace-loading"><Hospital size={24} /><b>Loading examination workspace</b></div></div>;
   if (!state && runtime?.mode === 'dev' && runtime.authRequired && !storageError) return <AccountAccess />;
@@ -113,12 +122,12 @@ function WorkspaceApp() {
     (intakeViews ? intakeViews[item.esrId]?.canValidate : item.status === 'queued' && !exceptionIds.has(item.esrId)))
     .map(item => item.esrId));
   const queueItems = [
-    { label: 'All cases', key: 'all' as const, icon: Inbox, ids: matchedIds },
-    { label: 'Exceptions', key: 'exception' as const, icon: AlertCircle, ids: exceptionIds },
-    { label: 'Review', key: 'review' as const, icon: FileSearch, ids: reviewIds },
-    { label: 'Ready', key: 'ready' as const, icon: CheckCircle2, ids: readyIds },
+    { label: 'All cases', key: 'all' as const, ids: matchedIds },
+    { label: 'Exceptions', key: 'exception' as const, ids: exceptionIds },
+    { label: 'Review', key: 'review' as const, ids: reviewIds },
+    { label: 'Ready', key: 'ready' as const, ids: readyIds },
   ];
-  const visibleIds = queueItems.find(item => item.key === queueFilter)!.ids;
+  const visibleIds = (queueItems.find(item => item.key === queueFilter) ?? queueItems[0]).ids;
   const actualSelectedId = visibleIds.has(selectedId) ? selectedId
     : intakeViews ? state.intake?.queueIds.find(id => visibleIds.has(id))
       : matches.find(item => visibleIds.has(item.id))?.id;
@@ -128,69 +137,48 @@ function WorkspaceApp() {
     toastTimer.current = window.setTimeout(() => setToast(undefined), 3600);
   };
   const selectedESR = actualSelectedId ? state.esrsById[actualSelectedId] : undefined;
-  const selected = selectedESR ? toCaseItem(state, selectedESR) : undefined;
-  const copy = stageCopy[stage];
-  const focusedWorkbench = Boolean(runtime?.simulationEnabled);
-  const stageChange = (name: StageKey) => selectStage(name);
   const nextStage: Partial<Record<StageKey, StageKey>> = { Intake: 'Medical Triage', 'Medical Triage': 'Scheduling', Scheduling: 'Clinical Evaluation', 'Clinical Evaluation': 'Internal QA', 'Internal QA': 'VA Delivery & Review' };
   const onContinue = (esrId: string) => {
     const next = nextStage[stage];
-    if (next) {
-      selectESR(esrId);
-      stageChange(next);
-    }
+    if (next) navigateTo(next, esrId);
   };
   const openSource = () => setStageView('source');
   const stageProps = {selectedEntityId, openSource, filters: queueItems.map(({key, label}) => ({key, label})),
     activeFilter: queueFilter, onFilterChange: setQueueFilter, query, onQueryChange: setQuery, visibleIds: matchedIds, selectedId, onSelect: selectESR,
     onReset: () => { setQuery(''); setQueueFilter('all'); },
-    onNavigate: (target: StageKey, id: string, entityId?: string) => { selectESR(id); selectStage(target); setSelectedEntityId(entityId); },
+    onNavigate: (target: StageKey, id: string, entityId?: string) => { navigateTo(target, id); setSelectedEntityId(entityId); },
   };
   const activities = selectedESR ? Object.values(state.activitiesById).filter((item) => item.esrId === selectedESR.id).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 100) : [];
 
   return <div className="app-backdrop"><div className="app-shell workflow-shell" data-stage={stage}>
     <a className="workflow-skip-link" href="#workspace-content">Skip to content</a>
-    <WorkspaceNavigation stage={stage} onNavigate={selectStage} open={mobileNav} onClose={() => setMobileNav(false)} />
+    <WorkspaceNavigation page={page} onNavigate={navigateTo} open={mobileNav} onClose={() => setMobileNav(false)} />
     <main className="main-area" id="workspace-content" tabIndex={-1}>
       <WorkspaceTopbar openNavigation={() => setMobileNav(true)} navigationOpen={mobileNav}
-        canSignOut={runtime?.mode === 'dev'} exceptions={stageExceptionCount} exceptionsSelected={queueFilter === 'exception'}
+        canSignOut={runtime?.mode === 'dev'} exceptions={page === 'Dashboard' ? 0 : stageExceptionCount} exceptionsSelected={queueFilter === 'exception'} showExceptions={false}
         onExceptions={() => {
           setStageView('queue');
           setQuery('');
           setIntakeStatus('all');
           setQueueFilter(queueFilter === 'exception' ? 'all' : 'exception');
-        }}>
-        {!focusedWorkbench && <nav className="pill-nav" aria-label="Case queue filters">
-          {queueItems.map(({ label, key, icon: Icon, ids }) => <button type="button" key={key}
-            className={queueFilter === key ? 'active' : ''} aria-pressed={queueFilter === key} onClick={() => setQueueFilter(key)}>
-            <Icon size={16} />{label}<span className="count">{ids.size}</span>
-          </button>)}
-        </nav>}
-      </WorkspaceTopbar>
+        }} />
       {storageError && <div className="storage-warning" role="alert"><AlertCircle size={16} /><span><b>Workspace is read-only</b> The service returned an error: {storageError} Changes cannot be saved.</span></div>}
-      <div className="page-scroll" ref={pageScrollRef}><div className="page-main">{!focusedWorkbench && <><section className="workspace-heading"><div><div className="crumb"><Hospital size={14} /><span>MDE-NG</span><ChevronRight size={13} /><span>{copy[0]}</span></div><h1 tabIndex={-1}>{copy[1]}</h1><p>{copy[2]}</p></div><div className="heading-actions"><button type="button" className="btn btn-outline" disabled={!selectedESR} onClick={() => setActivityOpen(true)}><Activity size={16} />Activity history</button></div></section>
-        <div className="filter-bar" role="search"><label className="search-box"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search ESR, claim ID, Veteran, contention, exam, or examiner" aria-label="Search examination records" />{query && <button type="button" onClick={() => setQuery('')} aria-label="Clear search"><X size={14} /></button>}</label><button type="button" className="btn btn-outline" disabled={!query && queueFilter === 'all'} onClick={() => { setQuery(''); setQueueFilter('all'); }}>Reset</button></div></>}
-        {!focusedWorkbench && !visibleIds.size && <div className="empty-state" role="status"><b>No work matches this stage and its filters</b><span>Change the filters to see eligible work.</span></div>}
-        {runtime?.simulationEnabled === false && visibleIds.size > 0 && <section className="work-panel">
-          <h2>Production work queue</h2>
-          <p>Production workflow actions require configured operational services.</p>
-          <div className="case-list">{matches.filter(item => visibleIds.has(item.id)).map(item => {
-            const record = toCaseItem(state, item);
-            return <button type="button" key={item.id} aria-pressed={item.id === actualSelectedId} onClick={() => selectESR(item.id)}>
-              <b>{record.id}</b><span>{record.name}</span><small>{record.state}</small>
-            </button>;
-          })}</div>
-        </section>}
-        {runtime?.simulationEnabled && stage === 'Intake' && <IntakePage onReceived={id => { setQuery(''); setQueueFilter('all'); setIntakeStatus('all'); selectESR(id); }} intakeStatus={intakeStatus} onIntakeStatus={setIntakeStatus} query={query} onQueryChange={setQuery} filters={queueItems.map(({ key, label, ids }) => ({ key, label, count: ids.size }))} activeFilter={queueFilter} onFilterChange={setQueueFilter} onHistory={() => setActivityOpen(true)} visibleIds={visibleIds} selectedId={actualSelectedId ?? ''} onSelect={selectESR} notify={notify} onContinue={onContinue} />}
+      <div className="page-scroll" ref={pageScrollRef}><div className="page-main">
+        {page === 'Dashboard' && <DashboardPage state={state} onOpen={(target, id) => navigateTo(target, id || undefined)} />}
+        {page !== 'Dashboard' && runtime?.simulationEnabled === false && <ReadOnlyStageQueue key={stage} stage={stage} state={state}
+          rows={matches.filter(item => visibleIds.has(item.id)).map(item => toCaseItem(state, item))} selectedId={actualSelectedId} onSelect={selectESR}
+          filters={queueItems.map(({key, label, ids}) => ({key, label, count: ids.size}))} activeFilter={queueFilter} onFilterChange={setQueueFilter}
+          query={query} onQueryChange={setQuery} onReset={stageProps.onReset} onHistory={() => setActivityOpen(true)} />}
+        {page !== 'Dashboard' && runtime?.simulationEnabled && stage === 'Intake' && <IntakePage onReceived={id => { setQuery(''); setQueueFilter('all'); setIntakeStatus('all'); selectESR(id); }} intakeStatus={intakeStatus} onIntakeStatus={setIntakeStatus} query={query} onQueryChange={setQuery} filters={queueItems.map(({ key, label, ids }) => ({ key, label, count: ids.size }))} activeFilter={queueFilter} onFilterChange={setQueueFilter} onHistory={() => setActivityOpen(true)} visibleIds={visibleIds} selectedId={actualSelectedId ?? ''} onSelect={selectESR} notify={notify} onContinue={onContinue} />}
         {showSource && <SourceStageRecords key={stage} stage={stage} openQueue={() => setStageView('queue')} />}
         {runtime?.simulationEnabled && !showSource && stage === 'Medical Triage' && <TriagePage openSource={openSource} query={query} onQueryChange={setQuery} filters={queueItems.map(({ key, label }) => ({ key, label: key === 'all' ? 'All contentions' : label }))} activeFilter={queueFilter} onFilterChange={setQueueFilter} selectedId={selectedId} onSelect={selectESR} onScheduling={(id, entityId) => stageProps.onNavigate('Scheduling', id, entityId)} />}
         {runtime?.simulationEnabled && !showSource && stage === 'Scheduling' && <SchedulingPage {...stageProps} />}
         {runtime?.simulationEnabled && !showSource && stage === 'Clinical Evaluation' && <ClinicalPage {...stageProps} />}
         {runtime?.simulationEnabled && !showSource && stage === 'Internal QA' && <QAPage {...stageProps} />}
         {runtime?.simulationEnabled && !showSource && stage === 'VA Delivery & Review' && <DeliveryPage {...stageProps} />}
-      </div>{selected && !focusedWorkbench && <CasePanel item={selected} stage={stage} state={state} />}</div></main>
-  </div>{toast && <div className="toast workflow-toast" role="status"><span className="toast-icon"><CheckCircle2 size={18} /></span><span className="toast-copy"><small>{toast.message.toLowerCase().includes('could not') || toast.message.toLowerCase().includes('required') ? 'ACTION NEEDS ATTENTION' : 'ACTION RECORDED'}</small><b>{toast.message}</b><em>{toast.esrId} · {toast.stage}</em></span><button type="button" aria-label="Dismiss notification" onClick={() => setToast(undefined)}><X size={15} /></button></div>}
-    {activityOpen && selectedESR && <div className="activity-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setActivityOpen(false); }}><section className="activity-dialog" role="dialog" aria-modal="true" aria-labelledby="activity-title"><header><div><small>WORKSPACE HISTORY</small><h2 id="activity-title">{selectedESR.id} activity</h2></div><button type="button" className="icon-button" aria-label="Close activity history" ref={activityCloseRef} onClick={() => setActivityOpen(false)}><X size={18} /></button></header><p>These records summarize workspace activity. They are not an immutable audit record or proof of VA activity.</p><div className="activity-list">{activities.map((event) => <article key={event.id}><span><b>{formatActivityLabel(event.action)}</b><small>{event.entityType} · {event.entityId}</small></span><time dateTime={event.at}>{dateLabel(event.at)}</time>{event.rationale && <p>{formatWorkspaceCopy(event.rationale)}</p>}</article>)}{activities.length === 0 && <div className="empty-state">No workflow events have been recorded for this ESR.</div>}</div></section></div>}
+      </div></div></main>
+  </div>{toast && <div className="toast workflow-toast" role="status"><span className="toast-icon"><CheckCircle2 size={18} /></span><span className="toast-copy"><small><HeadingText>{toast.message.toLowerCase().includes('could not') || toast.message.toLowerCase().includes('required') ? 'Action needs attention' : 'Action recorded'}</HeadingText></small><b>{toast.message}</b><em>{toast.esrId} · {toast.stage}</em></span><button type="button" aria-label="Dismiss notification" onClick={() => setToast(undefined)}><X size={15} /></button></div>}
+    {activityOpen && selectedESR && <div className="activity-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setActivityOpen(false); }}><section className="activity-dialog" role="dialog" aria-modal="true" aria-labelledby="activity-title"><header><div><small><HeadingText>Workspace history</HeadingText></small><h2 id="activity-title">{selectedESR.id} Activity</h2></div><button type="button" className="icon-button" aria-label="Close activity history" ref={activityCloseRef} onClick={() => setActivityOpen(false)}><X size={18} /></button></header><p>These records summarize workspace activity. They are not an immutable audit record or proof of VA activity.</p><div className="activity-list">{activities.map((event) => <article key={event.id}><span><b>{formatActivityLabel(event.action)}</b><small>{event.entityType} · {event.entityId}</small></span><time dateTime={event.at}>{dateLabel(event.at)}</time>{event.rationale && <p>{formatWorkspaceCopy(event.rationale)}</p>}</article>)}{activities.length === 0 && <div className="empty-state">No workflow events have been recorded for this ESR.</div>}</div></section></div>}
   </div>;
 }
 

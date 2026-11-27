@@ -11,13 +11,15 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.services.intake_common import example_claimant
 from app.models import OutboxJob
-from app.services.intake_examples import example_claimant
 from app.services.intake_processing import DocumentProcessingError, process_document
-from app.services.intake_view import READABLE_EVIDENCE_BLOCKER, has_intake_evidence, with_intake_views
+from app.services.intake_view import EVIDENCE_CATEGORIES, READABLE_EVIDENCE_BLOCKER, has_intake_evidence, with_intake_views
 from app.services.workspace_store import get_state, save_next_state
 
 TASK_NAME = "intake.process_document"
+TRIAGE_TASK_NAME = "triage.prepare_case"
+QA_TASK_NAME = "qa.audit_report"
 logger = logging.getLogger(__name__)
 
 
@@ -89,15 +91,17 @@ def refresh_intake_work(state: dict, esr_id: str, now: str) -> None:
 
 
 def save_state(db: Session, state: dict, esr_id: str) -> dict:
+    from app.services.workspace_store import get_snapshot
+    snapshot = get_snapshot(db)
+    revision = snapshot.revision if snapshot else state.get("revision", 0)
     now = timestamp()
-    revision = state["revision"]
     refresh_intake_work(state, esr_id, now)
     state.update(revision=revision + 1, updatedAt=now)
     save_next_state(db, revision, state)
     return state
 
 
-def add_case(state: dict, name: str | None, titles: list[str], actor: str, now: str) -> dict:
+def add_case(state: dict, name: str | None, titles: list[str], actor: str, now: str, *, is_simulated: bool = True) -> dict:
     esr_id = f"esr-local-{uuid4().hex[:12]}"
     example = name is None
     if name is None:
@@ -108,11 +112,12 @@ def add_case(state: dict, name: str | None, titles: list[str], actor: str, now: 
     reference = f"LOCAL-AEP-{esr_id.removeprefix('esr-local-').upper()}"
     facility = next(iter(state["facilitiesById"].values()), {})
     state["veteransById"][veteran_id] = {
-        **record(veteran_id, now), "displayName": name,
+        **record(veteran_id, now), "displayName": name or "",
         "initials": initials,
-        "claimIdentifier": f"SYN-{esr_id[-12:].upper()}",
-        "serviceGroup": "Army", "homeFacilityId": facility.get("id", ""),
-        "city": facility.get("city", "Synthetic"), "stateCode": facility.get("stateCode", ""),
+        "claimIdentifier": f"SYN-{esr_id[-12:].upper()}" if is_simulated else esr_id.upper(),
+        "serviceGroup": "", "homeFacilityId": facility.get("id", ""),
+        "city": facility.get("city", ""), "stateCode": facility.get("stateCode", ""),
+        "postalCode": facility.get("postalCode", ""),
         "accessibilityNeeds": [],
     }
     contention_ids = []
@@ -129,29 +134,10 @@ def add_case(state: dict, name: str | None, titles: list[str], actor: str, now: 
         "dueAt": (datetime.now(UTC) + timedelta(days=21)).isoformat(),
         "contentionIds": contention_ids, "evidenceDocumentIds": [], "priority": "routine",
         "sourceReference": esr_id.upper(), "externalState": "not-enabled",
+        "specialInstructions": "",
+        "isSimulated": is_simulated,
         "receiptStatus": "received", "receiptReference": reference, "aepRecordedAt": now,
         "intakeStatus": "processing",
-        "documentManifest": {
-            "manifestId": f"MNF-{esr_id[-8:].upper()}",
-            "source": "Prime EMS / VBMS eFolder Manifest",
-            "receivedAt": now,
-            "expectedDocuments": [
-                {
-                    "id": "exp-doc-1",
-                    "title": "Service Treatment Records (Active Duty)",
-                    "expectedCategory": "service-treatment",
-                    "expectedPages": 14,
-                    "required": True,
-                },
-                {
-                    "id": "exp-doc-2",
-                    "title": "VA Medical Center Treatment Notes",
-                    "expectedCategory": "va-medical-records",
-                    "expectedPages": 8,
-                    "required": True,
-                },
-            ],
-        },
     }
     if example:
         esr["intakeOrigin"] = "example"
@@ -164,21 +150,54 @@ def add_case(state: dict, name: str | None, titles: list[str], actor: str, now: 
 def queue_document(db: Session, state: dict, esr: dict, filename: str, content: bytes, now: str) -> str:
     digest = hashlib.sha256(content).hexdigest()
     documents = state["evidenceDocumentsById"]
-    if any(documents.get(item, {}).get("sourceHash") == digest for item in esr["evidenceDocumentIds"]):
-        raise HTTPException(409, "This file is already linked to this ESR.")
+    existing_id = next((item for item in esr["evidenceDocumentIds"] if documents.get(item, {}).get("sourceHash") == digest), None)
 
     doc_id = f"doc-{uuid4()}"
+    existing_title = documents.get(existing_id, {}).get("title", "an existing document") if existing_id else None
+    is_duplicate = bool(existing_id)
+
     documents[doc_id] = {
-        **record(doc_id, now), "esrId": esr["id"], "title": filename, "category": "other",
-        "sourceReference": filename, "sourceHash": digest, "pageCount": 0,
-        "classifiedPageCount": 0, "unreadablePageCount": 0, "classificationStatus": "queued",
+        **record(doc_id, now),
+        "esrId": esr["id"],
+        "title": filename,
+        "category": documents.get(existing_id, {}).get("category", "other") if is_duplicate else "other",
+        "sourceReference": filename,
+        "sourceHash": digest,
+        "pageCount": documents.get(existing_id, {}).get("pageCount", 1) if is_duplicate else 0,
+        "classifiedPageCount": documents.get(existing_id, {}).get("classifiedPageCount", 1) if is_duplicate else 0,
+        "unreadablePageCount": 0,
+        "classificationStatus": "needs-human-review" if is_duplicate else "queued",
+        "isDuplicate": is_duplicate,
+        "duplicateOf": existing_title if is_duplicate else None,
         "contentionIds": list(esr["contentionIds"]),
-        "processing": {"provider": settings.intake_provider, "status": "queued"},
+        "processing": {"provider": settings.intake_provider, "status": "completed" if is_duplicate else "queued"},
     }
-    touch(esr, now, evidenceDocumentIds=[*esr["evidenceDocumentIds"], doc_id], intakeStatus="processing")
+    touch(esr, now, evidenceDocumentIds=[*esr["evidenceDocumentIds"], doc_id],
+          intakeStatus="requires-attention" if is_duplicate else "processing")
     for contention_id in esr["contentionIds"]:
         contention = state["contentionsById"][contention_id]
         touch(contention, now, evidenceDocumentIds=[*contention["evidenceDocumentIds"], doc_id])
+    from app.services.triage import invalidate_stale_triage_plans
+    from app.services.qa_rules import invalidate_stale_qa_reviews
+    invalidate_stale_triage_plans(state, esr["id"], now, f"New evidence document '{filename}' queued; re-triage required.")
+    invalidate_stale_qa_reviews(state, esr["id"], now, f"New evidence document '{filename}' queued in Intake.", affected_doc_ids={doc_id})
+
+    if is_duplicate:
+        # Create an actionable exception for staff review as required by the Stage 1 specification
+        issue_id = f"issue-{doc_id}-duplicate"
+        state["intakeExceptionsById"][issue_id] = {
+            **record(issue_id, now),
+            "esrId": esr["id"],
+            "documentId": doc_id,
+            "duplicateOfDocumentId": existing_id,
+            "title": f"Duplicate Document: {filename}",
+            "detail": f"File '{filename}' has an identical checksum (SHA-256) to '{existing_title}' already linked to this ESR. Staff review or exclusion required.",
+            "status": "open",
+            "kind": "duplicate-document",
+            "sourceReference": filename,
+        }
+        return doc_id
+
     veteran = state["veteransById"].get(esr.get("veteranId"), {})
     claimant_name = veteran.get("displayName")
     db.add(OutboxJob(id=doc_id.removeprefix("doc-"), task_name=TASK_NAME, status="queued", payload={
@@ -188,19 +207,19 @@ def queue_document(db: Session, state: dict, esr: dict, filename: str, content: 
     return doc_id
 
 
-def claim_job() -> tuple[str, str, dict] | None:
+def claim_job() -> tuple[str, str, str, dict] | None:
     now = int(time.time())
     with SessionLocal() as db:
         candidate = db.execute(
-            select(OutboxJob.id, OutboxJob.status).where(
-                OutboxJob.task_name == TASK_NAME,
+            select(OutboxJob.id, OutboxJob.task_name, OutboxJob.status).where(
+                OutboxJob.task_name.in_((TASK_NAME, TRIAGE_TASK_NAME, QA_TASK_NAME)),
                 or_(OutboxJob.status == "queued",
                     and_(OutboxJob.status.like("run:%"), OutboxJob.status <= f"run:{now:010d}")),
             ).order_by(OutboxJob.created_at).limit(1)
         ).first()
         if not candidate:
             return None
-        job_id, status = candidate
+        job_id, task_name, status = candidate
         lease = f"run:{now + 180:010d}"
         result = db.execute(update(OutboxJob).where(OutboxJob.id == job_id, OutboxJob.status == status)
                             .values(status=lease))
@@ -208,7 +227,7 @@ def claim_job() -> tuple[str, str, dict] | None:
             return None
         payload = db.get(OutboxJob, job_id).payload
         db.commit()
-        return job_id, lease, payload
+        return job_id, task_name, lease, payload
 
 
 def finish_job(job_id: str, lease: str, document_id: str, result: dict) -> None:
@@ -236,6 +255,8 @@ def finish_job(job_id: str, lease: str, document_id: str, result: dict) -> None:
                     facts[key] = result[key]
             pages = result.get("excerpts", [])
             facts["sources"] = pages
+            if result.get("allPages"):
+                facts["allPages"] = result["allPages"]
             excerpts = [
                 {"id": f"{document_id}-{key}-{page['page']}", "pageNumber": page["page"],
                  "contentionId": key, "text": page["text"]}
@@ -290,18 +311,13 @@ def finish_job(job_id: str, lease: str, document_id: str, result: dict) -> None:
                         "kind": "unreadable-pages",
                         "detail": f"Page {sec['startPage']} has no readable text layer or OCR confidence is below threshold. Upload readable copy or review manually.",
                     }
-                if sec.get("category") == "other" and not (sec.get("isDuplicate") or sec.get("wrongPatient") or sec.get("unreadable")):
-                    sec_issue_id = f"issue-{document_id}-{sec_id}-review"
-                    issues[sec_issue_id] = {
-                        **record(sec_issue_id, now), "esrId": esr["id"], "documentId": document_id,
-                        "title": f"Classification Review: {sec['title']} (p. {sec['startPage']})", "status": "open",
-                        "sourceReference": sec.get("sourceReference") or doc["sourceReference"],
-                        "kind": "metadata-incomplete",
-                        "detail": f"Page {sec['startPage']} ({sec['title']}) requires staff confirmation of medical category.",
-                    }
             pending = any(state["evidenceDocumentsById"][item]["classificationStatus"] in {"queued", "processing"}
                           for item in esr["evidenceDocumentIds"])
             touch(esr, now, intakeStatus="processing" if pending else "requires-attention")
+            from app.services.triage import invalidate_stale_triage_plans
+            from app.services.qa_rules import invalidate_stale_qa_reviews
+            invalidate_stale_triage_plans(state, esr["id"], now, f"Document '{doc.get('title', document_id)}' updated; re-triage required.")
+            invalidate_stale_qa_reviews(state, esr["id"], now, f"Evidence document '{doc.get('title', document_id)}' updated in Intake.", affected_doc_ids={document_id})
             activity(state, esr["id"], document_id, "intake-document-reviewed", "intake-worker", now)
             try:
                 save_state(db, state, esr["id"])
@@ -317,11 +333,201 @@ def finish_job(job_id: str, lease: str, document_id: str, result: dict) -> None:
     logger.warning("Intake processing result will retry after the job lease expires.")
 
 
+def enqueue_triage_job(db: Session, esr_id: str, *, force: bool = False, evidence_digest: str = "") -> bool:
+    """Idempotently enqueue a Stage 2 triage preparation job unless an active one is already queued/running."""
+    from app.services.triage_store import register_or_reuse_triage_job
+
+    active_jobs = db.execute(
+        select(OutboxJob).where(
+            OutboxJob.task_name == TRIAGE_TASK_NAME,
+            or_(OutboxJob.status == "queued", OutboxJob.status.like("run:%")),
+        )
+    ).scalars().all()
+    for existing in active_jobs:
+        payload = existing.payload or {}
+        if payload.get("esrId") == esr_id and (not evidence_digest or payload.get("evidenceDigest") == evidence_digest):
+            register_or_reuse_triage_job(db, esr_id, evidence_digest or str(payload.get("evidenceDigest") or ""))
+            return False
+    register_or_reuse_triage_job(db, esr_id, evidence_digest)
+    db.add(OutboxJob(
+        task_name=TRIAGE_TASK_NAME,
+        status="queued",
+        payload={
+            "esrId": esr_id,
+            "force": force,
+            "attempts": 0,
+            "maxAttempts": 3,
+            "evidenceDigest": evidence_digest,
+        },
+    ))
+    return True
+
+
+def finish_triage_job(job_id: str, lease: str, esr_id: str, *, force: bool = False) -> None:
+    from copy import deepcopy
+    from app.services.triage_pipeline import run_triage_pipeline_for_state
+    from app.services.triage_store import (
+        compute_current_esr_digest,
+        esr_triage_lock,
+        finalize_triage_job,
+        merge_stage2_result_into_state,
+        persist_stage2_normalized,
+        register_or_reuse_triage_job,
+    )
+
+    with esr_triage_lock(esr_id):
+        # Step 1: Mark processing state visible to UI immediately & record DB job
+        expected_digest = ""
+        triage_job_id = ""
+        for _ in range(4):
+            with SessionLocal() as db:
+                job = db.get(OutboxJob, job_id)
+                if not job or job.status != lease:
+                    return
+                state = get_state(db)
+                esr = state["esrsById"].get(esr_id)
+                if esr is None:
+                    job.status = "completed"
+                    db.commit()
+                    return
+                expected_digest = compute_current_esr_digest(state, esr_id)
+                existing_proc = esr.get("triageProcessing") or {}
+                existing_dossier = (state.get("triageDossiersByEsrId") or {}).get(esr_id)
+                if (
+                    not force
+                    and existing_proc.get("status") == "completed"
+                    and existing_dossier
+                    and existing_dossier.get("sourceDigest") == expected_digest
+                    and (settings.intake_provider != "azure-openai" or existing_dossier.get("aiAttempted"))
+                ):
+                    job.status = "completed"
+                    db.commit()
+                    return
+                triage_job, _ = register_or_reuse_triage_job(db, esr_id, expected_digest, worker_lease=lease)
+                triage_job_id = triage_job.job_id
+                now = timestamp()
+                touch(esr, now, triageProcessing={"status": "processing", "startedAt": now, "evidenceDigest": expected_digest})
+                try:
+                    save_state(db, state, esr_id)
+                    db.commit()
+                    break
+                except HTTPException as exc:
+                    if exc.status_code != 409:
+                        raise
+                    db.rollback()
+
+        # Step 2: Run Stage 2 NLP + Search + Rules + LLM ONCE outside DB write lock
+        with SessionLocal() as db:
+            snapshot_state = get_state(db)
+        expected_digest = expected_digest or compute_current_esr_digest(snapshot_state, esr_id)
+        allow_llm = settings.intake_provider == "azure-openai"
+        computed_state = deepcopy(snapshot_state)
+        try:
+            dossier = run_triage_pipeline_for_state(computed_state, esr_id, allow_llm=allow_llm, force=force)
+        except Exception as exc:
+            logger.exception("Stage 2 triage job failed for ESR %s", esr_id)
+            with SessionLocal() as db:
+                job = db.get(OutboxJob, job_id)
+                if not job or job.status != lease:
+                    return
+                payload = dict(job.payload or {})
+                attempts = int(payload.get("attempts", 0)) + 1
+                max_attempts = int(payload.get("maxAttempts", 3))
+                payload["attempts"] = attempts
+                payload["lastError"] = str(exc)[:300]
+                job.payload = payload
+                if triage_job_id:
+                    finalize_triage_job(db, triage_job_id, "failed" if attempts >= max_attempts else "queued", last_error=str(exc))
+                if attempts < max_attempts:
+                    backoff_sec = min(300, 15 * (2 ** (attempts - 1)))
+                    job.status = f"run:{int(time.time()) + backoff_sec:010d}"
+                else:
+                    job.status = "dead-letter"
+                    state = get_state(db)
+                    if esr := state.get("esrsById", {}).get(esr_id):
+                        now = timestamp()
+                        touch(esr, now, triageProcessing={
+                            "status": "failed",
+                            "failedAt": now,
+                            "error": str(exc)[:300],
+                            "retryable": True,
+                        })
+                        try:
+                            save_state(db, state, esr_id)
+                        except HTTPException:
+                            pass
+                db.commit()
+            return
+
+        # Step 3: Atomic merge onto latest snapshot state (checks evidence version unchanged; never re-runs LLM)
+        for _ in range(5):
+            with SessionLocal() as db:
+                job = db.get(OutboxJob, job_id)
+                if not job or job.status != lease:
+                    return
+                state = get_state(db)
+                esr = state["esrsById"].get(esr_id)
+                if esr is None:
+                    if triage_job_id:
+                        finalize_triage_job(db, triage_job_id, "completed")
+                    job.status = "completed"
+                    db.commit()
+                    return
+                now = timestamp()
+                current_digest = compute_current_esr_digest(state, esr_id)
+                evidence_changed = bool(expected_digest and current_digest and current_digest != expected_digest)
+                merge_stage2_result_into_state(state, esr_id, computed_state, dossier, now, mark_stale=evidence_changed)
+                if dossier:
+                    esr_facts = [
+                        row for row in (computed_state.get("clinicalFactsById") or {}).values()
+                        if row.get("esrId") == esr_id
+                    ]
+                    persist_stage2_normalized(
+                        db,
+                        esr_id,
+                        dossier,
+                        esr_facts,
+                        document_count=len(esr.get("evidenceDocumentIds") or []),
+                        is_stale=evidence_changed,
+                    )
+                    activity(
+                        state,
+                        esr_id,
+                        esr_id,
+                        "triage-dossier-stale" if evidence_changed else "triage-dossier-prepared",
+                        "triage-worker",
+                        now,
+                    )
+                if triage_job_id:
+                    finalize_triage_job(db, triage_job_id, "stale" if evidence_changed else "completed")
+                if evidence_changed:
+                    enqueue_triage_job(db, esr_id, force=True, evidence_digest=current_digest)
+                try:
+                    save_state(db, state, esr_id)
+                except HTTPException as exc:
+                    if exc.status_code != 409:
+                        raise
+                    db.rollback()
+                    continue
+                changed = db.execute(update(OutboxJob).where(OutboxJob.id == job_id, OutboxJob.status == lease)
+                                     .values(status="completed"))
+                if changed.rowcount == 1:
+                    db.commit()
+                return
+
+
 def process_next_job() -> bool:
     claimed = claim_job()
     if not claimed:
         return False
-    job_id, lease, payload = claimed
+    job_id, task_name, lease, payload = claimed
+    if task_name == TRIAGE_TASK_NAME:
+        finish_triage_job(job_id, lease, payload["esrId"], force=bool(payload.get("force")))
+        return True
+    if task_name == QA_TASK_NAME:
+        from app.services.qa_pipeline import finish_qa_audit_job
+        finish_qa_audit_job(job_id, lease, payload["reviewId"], force=bool(payload.get("force")))
+        return True
     try:
         result = process_document(
             payload["filename"],
@@ -370,11 +576,58 @@ def apply_intake_command(state: dict, action: str, args: list, actor: str) -> di
     elif action == "reviewIntakeException":
         if not issue or issue["status"] not in {"open", "escalated"}:
             raise HTTPException(422, "This exception has already been dispositioned.")
-        if len(args) != 3 or args[1] not in ("resolved", "escalated") or not isinstance(args[2], str) or not args[2].strip():
+        if len(args) != 3 or args[1] not in ("resolved", "escalated", "excluded") or not isinstance(args[2], str) or not args[2].strip():
             raise HTTPException(422, "Choose a disposition and enter a review note.")
-        touch(issue, now, status=args[1], resolution=args[2].strip()[:2000])
-        object_id = issue.get("documentId") or esr_id
-        event = f"intake-exception-{args[1]}"
+        
+        disposition = args[1]
+        note = args[2].strip()[:2000]
+        doc_id = issue.get("documentId")
+        original_id = issue.get("duplicateOfDocumentId")
+        linked = esr.get("evidenceDocumentIds", [])
+        if (
+            disposition == "resolved"
+            and issue.get("kind") == "duplicate-document"
+            and doc_id != original_id
+            and doc_id in linked
+            and original_id in linked
+        ):
+            raise HTTPException(422, "Exclude the duplicate copy to keep the existing file.")
+
+        if disposition == "excluded":
+            touch(issue, now, status="resolved", resolution=f"Excluded: {note}")
+            if doc_id:
+                if doc_id in esr.get("evidenceDocumentIds", []):
+                    esr["evidenceDocumentIds"] = [d for d in esr["evidenceDocumentIds"] if d != doc_id]
+                for cid in esr.get("contentionIds", []):
+                    contention = state["contentionsById"].get(cid)
+                    if contention and doc_id in contention.get("evidenceDocumentIds", []):
+                        contention["evidenceDocumentIds"] = [d for d in contention["evidenceDocumentIds"] if d != doc_id]
+                doc = state["evidenceDocumentsById"].get(doc_id)
+                if doc:
+                    touch(doc, now, classificationStatus="excluded", isExcluded=True, isDuplicate=False, duplicateOf=None)
+            object_id = doc_id or esr_id
+            event = "intake-exception-resolved"
+        elif disposition == "resolved":
+            touch(issue, now, status="resolved", resolution=note)
+            if doc_id:
+                doc = state["evidenceDocumentsById"].get(doc_id)
+                if doc:
+                    touch(doc, now, classificationStatus="indexed", isDuplicate=False, duplicateOf=None)
+                    if "quality" in doc and isinstance(doc["quality"], dict):
+                        doc["quality"]["isDuplicate"] = False
+                    if "sections" in doc and isinstance(doc["sections"], list):
+                        for sec in doc["sections"]:
+                            sec["isDuplicate"] = False
+                            sec["duplicateOf"] = None
+                            sec["actionRequired"] = False
+                            sec["status"] = "indexed"
+                            sec["issues"] = [i for i in sec.get("issues", []) if not i.lower().startswith("possible duplicate")]
+            object_id = doc_id or esr_id
+            event = "intake-exception-resolved"
+        else:
+            touch(issue, now, status="escalated", resolution=note)
+            object_id = doc_id or esr_id
+            event = "intake-exception-escalated"
     elif action == "completeDocumentProcessing":
         if not view["canProcessLegacy"]:
             raise HTTPException(422, "Uploaded documents are processed by the Intake worker.")
@@ -398,26 +651,24 @@ def apply_intake_command(state: dict, action: str, args: list, actor: str) -> di
         if len(args) < 2 or not isinstance(args[1], str) or not args[1].strip():
             raise HTTPException(422, "Select a valid document category.")
         new_category = args[1].strip()
-        valid_cats = {
-            "service-treatment", "va-medical-records", "private-medical-records",
-            "hospital", "laboratory", "imaging", "prior-examination", "other",
-        }
-        if new_category not in valid_cats:
+        if new_category not in EVIDENCE_CATEGORIES and new_category != "hospital":
             raise HTTPException(422, f"Invalid category {new_category}.")
 
-        if section_id and doc.get("sections"):
-            for sec in doc["sections"]:
-                if sec.get("sectionId") == section_id:
-                    sec["category"] = new_category
-                    sec["userReclassified"] = True
-                    sec["status"] = "indexed"
-                    sec["actionRequired"] = False
-                    sec["issues"] = []
+        sections = doc.get("sections", [])
+        if section_id:
+            section = next((item for item in sections if item.get("sectionId") == section_id), None)
+            if section is None:
+                raise HTTPException(404, "Document section not found.")
+            section.update(category=new_category, userReclassified=True, status="indexed", actionRequired=False, issues=[])
+            if len(sections) == 1:
+                doc["category"] = new_category
             touch(doc, now, userReclassified=True)
             for k, issue in list(state["intakeExceptionsById"].items()):
                 if issue.get("documentId") == doc_id and section_id in k and issue["status"] == "open":
                     touch(issue, now, status="resolved", resolution=f"Category confirmed as {new_category} by staff.")
         else:
+            if len(sections) == 1:
+                sections[0].update(category=new_category, userReclassified=True)
             touch(doc, now, category=new_category, userReclassified=True, classificationStatus="indexed")
             issue_id = f"issue-{doc_id}-processing"
             if issue_id in state["intakeExceptionsById"]:
@@ -427,9 +678,21 @@ def apply_intake_command(state: dict, action: str, args: list, actor: str) -> di
     else:
         if not view["canValidate"]:
             raise HTTPException(422, view["blocker"])
-        touch(esr, now, intakeStatus="ready-for-triage")
+        touch(esr, now, intakeStatus="ready-for-triage",
+              triageProcessing={"status": "queued", "queuedAt": now})
         event = "intake-validated"
 
+    from app.services.triage import invalidate_stale_triage_plans
+    from app.services.qa_rules import invalidate_stale_qa_reviews
+    if event in {"intake-exception-resolved", "intake-document-reviewed"}:
+        invalidate_stale_triage_plans(state, esr_id, now, "Linked evidence changed in Intake; re-triage required.")
+        invalidate_stale_qa_reviews(
+            state,
+            esr_id,
+            now,
+            "Linked evidence updated in Intake; QA re-verification required.",
+            affected_doc_ids={object_id} if object_id and str(object_id).startswith("doc-") else None,
+        )
     activity(state, esr_id, object_id, event, actor, now)
     refresh_intake_work(state, esr_id, now)
     state.update(revision=state["revision"] + 1, updatedAt=now)

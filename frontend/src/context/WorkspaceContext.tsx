@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AppointmentLogistics, Communication, DiagnosticReportedFlag, DocumentReviewDecision, EntityId, FieldValues, Modality, SimulatedDeliveryResponse, StageKey, TriagePlan } from '../domain/model';
-import { generateStageReview, intakeRequest, loadRuntime, loadWorkItem, loadWorkspace, receiveIntakeSample, receiveIntakeXml, requestIntakeDocumentReview, sendWorkspaceCommand, WorkspaceApiError, type AIStageReview, type WorkspacePayload, type WorkspaceRuntime } from '../data/repositories/workspaceApi';
+import { generateStageReview, intakeRequest, loadRuntime, loadWorkItem, loadWorkspace, receiveIntakeSample, receiveIntakeXml, requestIntakeDocumentReview, sendWorkspaceCommand, triggerQAAudit, triggerTriagePrepare, uploadClinicalDBQ, uploadClinicalDiagnostic, validateAndDraftClinical, WorkspaceApiError, type AIStageReview, type WorkspacePayload, type WorkspaceRuntime } from '../data/repositories/workspaceApi';
 
 export type CommandResult = { ok: true; message: string; value?: unknown } | { ok: false; message: string };
+export type TriageActionKind = 'draft' | 'approve' | 'clarification' | 'resume' | 'authorizeAce';
 
 type WorkspaceContextValue = {
   state: WorkspacePayload | undefined;
@@ -10,24 +11,34 @@ type WorkspaceContextValue = {
   storageError: string;
   runtime: WorkspaceRuntime | undefined;
   receiveIntakeExample: (scenario: string) => Promise<string>;
-  importIntakeDocument: (body: FormData, esrId?: string) => Promise<string>;
+  importIntakeDocument: (body: FormData, esrId?: string, examManagementRequest?: boolean) => Promise<string>;
   retryIntakeDocument: (esrId: string, documentId: string) => Promise<CommandResult>;
-  reviewIntakeException: (id: EntityId, disposition: 'resolved' | 'escalated', resolution: string) => Promise<CommandResult>;
+  reviewIntakeException: (id: EntityId, disposition: 'resolved' | 'escalated' | 'excluded', resolution: string) => Promise<CommandResult>;
   recordIntakeReceipt: (id: EntityId, receiptReference?: string) => Promise<CommandResult>;
   completeDocumentProcessing: (esrId: EntityId) => Promise<CommandResult>;
   updateDocumentCategory: (documentId: EntityId, category: string) => Promise<CommandResult>;
   validateIntake: (esrId: EntityId) => Promise<CommandResult>;
+  savingIntakeEsrs: Record<string, boolean>;
+  busyTriageByContention: Record<string, TriageActionKind>;
+  triageDraftEdits: Record<string, TriagePlan>;
+  setTriageDraftEdit: (contentionId: EntityId, plan: TriagePlan) => void;
+  clearTriageDraftEdit: (contentionId: EntityId) => void;
   saveTriageDraft: (id: EntityId, plan: TriagePlan) => Promise<CommandResult>;
   approveTriagePlan: (id: EntityId, plan: TriagePlan) => Promise<CommandResult>;
   requestTriageClarification: (id: EntityId, note: string) => Promise<CommandResult>;
   resumeTriageReview: (id: EntityId, note: string) => Promise<CommandResult>;
+  authorizeTriageAce: (id: EntityId, rationale: string) => Promise<CommandResult>;
+  escalateDistressAlert: (id: EntityId, note: string) => Promise<CommandResult>;
+  prepareTriageDossier: (esrId: EntityId, force?: boolean) => Promise<CommandResult>;
   getWorkItem: <T>(id: string, signal?: AbortSignal) => Promise<T>;
   requestStageReview: (stage: StageKey, entityId: string, signal?: AbortSignal) => Promise<AIStageReview>;
   reviewIntakeDocuments: (esrId: string, signal: AbortSignal, disposition?: { reviewId: string; decision: DocumentReviewDecision }) => Promise<void>;
   recordOutreach: (esrId: EntityId, appointmentId: EntityId, channel: Communication['channel'], outcome: Communication['outcome'], summary: string, details?: { attemptedAt?: string; voicemail?: 'left' | 'unavailable' }) => Promise<CommandResult>;
-  holdAppointment: (requirementOrExamId: EntityId, examinerId: EntityId, slot: { startsAt: string; endsAt: string; facilityId: string; modality: Modality }) => Promise<CommandResult>;
+  holdAppointment: (requirementOrExamId: EntityId | EntityId[], examinerId: EntityId, slot: { slotId?: string; startsAt: string; endsAt: string; facilityId: string; modality: Modality }) => Promise<CommandResult>;
+  holdCoordinatedAppointments: (items: Array<{ requirementId: EntityId; examinerId: EntityId; slot: { slotId?: string; startsAt: string; endsAt: string; facilityId: string; modality: Modality } }>) => Promise<CommandResult>;
   confirmAppointment: (id: EntityId, note?: string) => Promise<CommandResult>;
   setSchedulingDistanceLimit: (miles: number) => Promise<CommandResult>;
+  verifyVeteranLocation: (esrId: EntityId, location: { city?: string; stateCode?: string; postalCode?: string }) => Promise<CommandResult>;
   recordAppointmentLogistics: (id: EntityId, input: Omit<AppointmentLogistics, 'travelDistanceMiles' | 'travelLimitMiles' | 'recordedAt'>) => Promise<CommandResult>;
   rescheduleAppointment: (id: EntityId, slot: { startsAt: string; endsAt: string; facilityId: string; modality: Modality }, coordinationReference?: string) => Promise<CommandResult>;
   cancelAppointment: (id: EntityId, reason: string) => Promise<CommandResult>;
@@ -38,12 +49,17 @@ type WorkspaceContextValue = {
   recordExamEncounter: (id: EntityId, note: string) => Promise<CommandResult>;
   recordDiagnosticException: (id: EntityId, reason: 'claimant-declined' | 'medically-inadvisable', note: string) => Promise<CommandResult>;
   completeClinicalReview: (id: EntityId, attestation: { versionId: string; confirmed: boolean; draftRevision: number }) => Promise<CommandResult>;
+  returnClinicalToScheduling: (examOrDbqId: EntityId, reason: string) => Promise<CommandResult>;
+  uploadDBQDocument: (dbqId: EntityId, file: File) => Promise<CommandResult>;
+  uploadDiagnosticDocument: (orderId: EntityId, file: File) => Promise<CommandResult>;
+  validateAndDraftDBQ: (dbqId: EntityId, values?: FieldValues) => Promise<CommandResult>;
   requestCorrection: (id: EntityId, comment: string) => Promise<CommandResult>;
   addQAFinding: (reviewId: EntityId, input: { title: string; sectionReference: string; issueCategory: import('../domain/model').QAFinding['issueCategory']; severity: import('../domain/model').QAFinding['severity']; comment: string }) => Promise<CommandResult>;
   resubmitCorrection: (id: EntityId, values: FieldValues) => Promise<CommandResult>;
   resolveQAFinding: (id: EntityId, comment: string) => Promise<CommandResult>;
-  approveQAReview: (id: EntityId, note: string) => Promise<CommandResult>;
+  approveQAReview: (id: EntityId, note: string, manualOverride?: boolean) => Promise<CommandResult>;
   runQAChecklist: (id: EntityId) => Promise<CommandResult>;
+  runQAAudit: (reviewId: EntityId, force?: boolean) => Promise<CommandResult>;
   ensureResultsPackage: (esrId: EntityId) => Promise<CommandResult>;
   validateResultsPackage: (id: EntityId) => Promise<CommandResult>;
   prepareResultsPackage: (id: EntityId) => Promise<CommandResult>;
@@ -53,6 +69,11 @@ type WorkspaceContextValue = {
   simulatePackageTransmission: (id: EntityId) => Promise<CommandResult>;
   recordSimulatedPackageResponse: (id: EntityId, response: 'accepted' | 'report-fix' | 'new-exam-requested', details: string, targetId?: EntityId) => Promise<CommandResult>;
   recordSimulatedContentionCancellation: (esrId: EntityId, contentionId: EntityId, reason: string) => Promise<CommandResult>;
+  uploadContentionDocuments: (packageId: EntityId, contentionIds: EntityId[], simulateFail?: boolean) => Promise<CommandResult>;
+  sendContentionRap: (packageId: EntityId, contentionIds: EntityId[], simulateFail?: boolean) => Promise<CommandResult>;
+  createLinkedReworkESR: (input: { originalEsrId: EntityId; affectedContentionIds: EntityId[]; reworkCategory: 'insufficient' | 'clarification' | 'both'; vaSpecialInstructions: string; previousPackageId?: EntityId; reworkRequestKey?: string }) => Promise<CommandResult>;
+  assessReworkESR: (reworkEsrId: EntityId, decision: { route: 'report-correction' | 'additional-exam-deferred' | 'technical-delivery-issue' | 'pending-clarification'; assessmentNote: string; deficiencyCategory?: string; responsibleStage?: string; correctiveAction?: string; clarificationRequestNote?: string }) => Promise<CommandResult>;
+  updateReworkRootCause: (analyticsId: EntityId, patch: { deficiencyCategory?: string; responsibleStage?: string; correctiveAction?: string; resolutionOutcome?: string }) => Promise<CommandResult>;
   closeESR: (id: EntityId, note: string) => Promise<CommandResult>;
 };
 
@@ -62,12 +83,19 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [runtime, setRuntime] = useState<WorkspaceRuntime>();
   const [loading, setLoading] = useState(true);
   const [storageError, setStorageError] = useState('');
+  const [savingIntakeEsrs, setSavingIntakeEsrs] = useState<Record<string, boolean>>({});
+  const [busyTriageByContention, setBusyTriageByContention] = useState<Record<string, TriageActionKind>>({});
+  const [triageDraftEdits, setTriageDraftEdits] = useState<Record<string, TriagePlan>>({});
   const stateRef = useRef<WorkspacePayload | undefined>(undefined);
+  const savingIntakeRef = useRef<Set<string>>(new Set());
+  const busyTriageRef = useRef<Set<string>>(new Set());
+  const pollInFlightRef = useRef(false);
+  const inFlightCommandsRef = useRef(0);
   const sessionVersion = useRef(0);
   const queueRef = useRef<Promise<void>>(Promise.resolve());
 
   const acceptState = useCallback((incoming: WorkspacePayload, version: number) => {
-    if (version !== sessionVersion.current || incoming.revision <= (stateRef.current?.revision ?? -1)) return;
+    if (version !== sessionVersion.current || incoming.revision < (stateRef.current?.revision ?? -1)) return;
     stateRef.current = incoming;
     setState(incoming);
   }, []);
@@ -96,7 +124,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (!workspaceLoaded) return;
     const version = sessionVersion.current;
     const timer = window.setInterval(async () => {
-      if (document.visibilityState !== 'visible') return;
+      if (document.visibilityState !== 'visible' || pollInFlightRef.current || inFlightCommandsRef.current > 0) return;
+      pollInFlightRef.current = true;
       try {
         acceptState(await loadWorkspace(), version);
       } catch (error) {
@@ -105,13 +134,27 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           stateRef.current = undefined;
           setState(undefined);
         }
+      } finally {
+        pollInFlightRef.current = false;
       }
     }, 2000);
     return () => window.clearInterval(timer);
   }, [workspaceLoaded, acceptState]);
 
+  const getWorkItem = useCallback(async <T,>(id: string, signal?: AbortSignal): Promise<T> => {
+    const version = sessionVersion.current;
+    try { return await loadWorkItem<T>(id, signal); }
+    catch (error) {
+      if (!signal?.aborted && error instanceof WorkspaceApiError && error.status === 404) {
+        await loadWorkspace().then(incoming => { if (!signal?.aborted) acceptState(incoming, version); }).catch(() => {});
+      }
+      throw error;
+    }
+  }, [acceptState]);
+
   const run = useCallback((action: string, args: unknown[], message: string): Promise<CommandResult> => {
     const version = sessionVersion.current;
+    inFlightCommandsRef.current += 1;
     const operation = queueRef.current.then(async (): Promise<CommandResult> => {
       const current = stateRef.current;
       if (!current || version !== sessionVersion.current) return { ok: false, message: 'Open the workspace before making changes.' };
@@ -121,20 +164,91 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         return { ok: true, message, value: result.value };
       } catch (error) {
         if (error instanceof WorkspaceApiError && error.status === 409) {
-          await loadWorkspace().then(incoming => acceptState(incoming, version)).catch(() => {});
+          try {
+            const fresh = await loadWorkspace();
+            acceptState(fresh, version);
+            const retried = await sendWorkspaceCommand(action, args, fresh.revision);
+            acceptState(retried.state, version);
+            return { ok: true, message, value: retried.value };
+          } catch (retryError) {
+            if (retryError instanceof WorkspaceApiError && retryError.status === 409) {
+              await loadWorkspace().then(incoming => acceptState(incoming, version)).catch(() => {});
+            }
+            return { ok: false, message: retryError instanceof Error ? retryError.message : 'The action could not be saved.' };
+          }
         }
         return { ok: false, message: error instanceof Error ? error.message : 'The action could not be saved.' };
+      } finally {
+        inFlightCommandsRef.current = Math.max(0, inFlightCommandsRef.current - 1);
       }
     });
     queueRef.current = operation.then(() => undefined, () => undefined);
     return operation;
   }, [acceptState]);
 
-  const importIntakeDocument = useCallback(async (body: FormData, esrId?: string) => {
+  const setTriageDraftEdit = useCallback((contentionId: EntityId, plan: TriagePlan) => {
+    setTriageDraftEdits(prev => ({ ...prev, [contentionId]: plan }));
+  }, []);
+
+  const clearTriageDraftEdit = useCallback((contentionId: EntityId) => {
+    setTriageDraftEdits(prev => {
+      if (!(contentionId in prev)) return prev;
+      const next = { ...prev };
+      delete next[contentionId];
+      return next;
+    });
+  }, []);
+
+  const runTriageAction = useCallback(async (
+    contentionId: EntityId,
+    kind: TriageActionKind,
+    backendAction: string,
+    args: unknown[],
+    message: string,
+  ): Promise<CommandResult> => {
+    if (busyTriageRef.current.has(contentionId)) {
+      return { ok: false, message: 'An examination plan update is already saving for this contention.' };
+    }
+    busyTriageRef.current.add(contentionId);
+    setBusyTriageByContention(prev => ({ ...prev, [contentionId]: kind }));
+    try {
+      const result = await run(backendAction, args, message);
+      if (result.ok && (kind === 'draft' || kind === 'approve')) {
+        clearTriageDraftEdit(contentionId);
+      }
+      return result;
+    } finally {
+      busyTriageRef.current.delete(contentionId);
+      setBusyTriageByContention(prev => {
+        if (!(contentionId in prev)) return prev;
+        const next = { ...prev };
+        delete next[contentionId];
+        return next;
+      });
+    }
+  }, [run, clearTriageDraftEdit]);
+
+  const validateIntake = useCallback(async (esrId: EntityId): Promise<CommandResult> => {
+    if (savingIntakeRef.current.has(esrId)) {
+      return { ok: false, message: 'Validation is already in progress for this ESR.' };
+    }
+    savingIntakeRef.current.add(esrId);
+    setSavingIntakeEsrs(prev => ({ ...prev, [esrId]: true }));
+    try {
+      return await run('validateIntake', [esrId], 'Intake validated; related contentions are available in Medical Triage.');
+    } finally {
+      savingIntakeRef.current.delete(esrId);
+      setSavingIntakeEsrs(prev => {
+        const next = { ...prev };
+        delete next[esrId];
+        return next;
+      });
+    }
+  }, [run]);
+
+  const importIntakeDocument = useCallback(async (body: FormData, esrId?: string, examManagementRequest = false) => {
     const version = sessionVersion.current;
-    const file = body.get('file');
-    const xml = !esrId && file instanceof File && file.name.toLowerCase().endsWith('.xml');
-    const result = xml
+    const result = !esrId && examManagementRequest
       ? await receiveIntakeXml(body)
       : await intakeRequest(esrId ? `/${encodeURIComponent(esrId)}/documents` : '', body);
     acceptState(result.state, version);
@@ -165,25 +279,90 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     acceptState(result.state, version);
   }, [acceptState]);
 
+  const prepareTriageDossier = useCallback(async (esrId: EntityId, force = false): Promise<CommandResult> => {
+    try {
+      const version = sessionVersion.current;
+      const result = await triggerTriagePrepare(esrId, force);
+      acceptState(result.state, version);
+      return { ok: true, message: 'Clinical dossier and examination plans updated.' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Unable to prepare clinical triage dossier.' };
+    }
+  }, [acceptState]);
+
+  const uploadDBQDocument = useCallback(async (dbqId: EntityId, file: File): Promise<CommandResult> => {
+    try {
+      const version = sessionVersion.current;
+      const result = await uploadClinicalDBQ(dbqId, file);
+      acceptState(result.state, version);
+      return { ok: true, message: 'Completed DBQ uploaded, extracted, and validated.', value: result };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Unable to process uploaded DBQ.' };
+    }
+  }, [acceptState]);
+
+  const uploadDiagnosticDocument = useCallback(async (orderId: EntityId, file: File): Promise<CommandResult> => {
+    try {
+      const version = sessionVersion.current;
+      const result = await uploadClinicalDiagnostic(orderId, file);
+      acceptState(result.state, version);
+      return { ok: true, message: 'Diagnostic report uploaded and linked for clinician review.', value: result };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Unable to upload diagnostic report.' };
+    }
+  }, [acceptState]);
+
+  const validateAndDraftDBQ = useCallback(async (dbqId: EntityId, values?: FieldValues): Promise<CommandResult> => {
+    try {
+      const version = sessionVersion.current;
+      const result = await validateAndDraftClinical(dbqId, values);
+      acceptState(result.state, version);
+      return { ok: true, message: 'Clinical validation complete and draft medical review prepared.', value: result };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Unable to run clinical validation.' };
+    }
+  }, [acceptState]);
+
+  const runQAAudit = useCallback(async (reviewId: EntityId, force = false): Promise<CommandResult> => {
+    try {
+      const version = sessionVersion.current;
+      const result = await triggerQAAudit(reviewId, force);
+      acceptState(result.state, version);
+      return { ok: true, message: 'Stage 5 contract rules and clinical AI audit completed.' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Unable to run Stage 5 QA audit.' };
+    }
+  }, [acceptState]);
+
   const value = useMemo<WorkspaceContextValue>(() => {
     return {
       state, loading, storageError, runtime, importIntakeDocument, retryIntakeDocument, receiveIntakeExample,
-      reviewIntakeException: (id, disposition, resolution) => run('reviewIntakeException', [id, disposition, resolution], disposition === 'resolved' ? 'Intake exception disposition saved.' : 'Intake escalation recorded.'),
+      reviewIntakeException: (id, disposition, resolution) => run('reviewIntakeException', [id, disposition, resolution], disposition === 'excluded' ? 'Duplicate document excluded from evidence.' : disposition === 'resolved' ? 'Intake exception disposition saved.' : 'Intake escalation recorded.'),
       recordIntakeReceipt: (id, receiptReference) => run('recordIntakeReceipt', [id, receiptReference], 'ESR receipt and acknowledgement recorded.'),
       completeDocumentProcessing: (esrId) => run('completeDocumentProcessing', [esrId], 'Document processing state saved.'),
       updateDocumentCategory: (documentId, category) => run('updateDocumentCategory', [documentId, category], 'Document category updated.'),
-      validateIntake: (esrId) => run('validateIntake', [esrId], 'Intake validated; related contentions are available in Medical Triage.'),
-      saveTriageDraft: (id, plan) => run('saveTriageDraft', [id, plan], 'Examination plan draft saved.'),
-      approveTriagePlan: (id, plan) => run('approveTriagePlan', [id, plan], 'Examination plan approved and sent to Scheduling.'),
-      requestTriageClarification: (id, note) => run('requestTriageClarification', [id, note], 'Clarification request recorded.'),
-      resumeTriageReview: (id, note) => run('resumeTriageReview', [id, note], 'Clarification response recorded. Review reopened.'),
-      getWorkItem: loadWorkItem,
+      validateIntake,
+      savingIntakeEsrs,
+      busyTriageByContention,
+      triageDraftEdits,
+      setTriageDraftEdit,
+      clearTriageDraftEdit,
+      saveTriageDraft: (id, plan) => runTriageAction(id, 'draft', 'saveTriageDraft', [id, plan], 'Examination plan draft saved.'),
+      approveTriagePlan: (id, plan) => runTriageAction(id, 'approve', 'approveTriagePlan', [id, plan], 'Examination plan approved and sent to Scheduling.'),
+      requestTriageClarification: (id, note) => runTriageAction(id, 'clarification', 'requestTriageClarification', [id, note], 'Clarification request recorded.'),
+      resumeTriageReview: (id, note) => runTriageAction(id, 'resume', 'resumeTriageReview', [id, note], 'Clarification response recorded. Review reopened.'),
+      authorizeTriageAce: (id, rationale) => runTriageAction(id, 'authorizeAce', 'authorizeTriageAce', [id, rationale], 'ACE eligibility authorized by clinician for this examination.'),
+      escalateDistressAlert: (id, note) => run('escalateDistressAlert', [id, note], 'Clinical safety alert escalated to authorized staff.'),
+      prepareTriageDossier,
+      getWorkItem,
       requestStageReview: generateStageReview,
       reviewIntakeDocuments,
       recordOutreach: (esrId, appointmentId, channel, outcome, summary, details) => run('recordOutreach', [esrId, appointmentId, channel, outcome, summary, details], 'Claimant contact attempt recorded.'),
       holdAppointment: (id, examinerId, slot) => run('holdAppointment', [id, examinerId, slot], 'Appointment slot recorded; claimant confirmation is pending.'),
+      holdCoordinatedAppointments: (items) => run('holdCoordinatedAppointments', [items], 'Coordinated appointment package held; claimant confirmation is pending.'),
       confirmAppointment: (id, note) => run('confirmAppointment', [id, note], 'Appointment confirmation saved.'),
       setSchedulingDistanceLimit: (miles) => run('setSchedulingDistanceLimit', [miles], 'Travel limit saved.'),
+      verifyVeteranLocation: (esrId, location) => run('verifyVeteranLocation', [esrId, location], 'Veteran scheduling location verified.'),
       recordAppointmentLogistics: (id, input) => run('recordAppointmentLogistics', [id, input], 'Logistics details recorded.'),
       rescheduleAppointment: (id, slot, coordinationReference) => run('rescheduleAppointment', [id, slot, coordinationReference], 'Appointment rescheduled after eligibility and conflict checks.'),
       cancelAppointment: (id, reason) => run('cancelAppointment', [id, reason], 'Appointment cancellation recorded.'),
@@ -194,12 +373,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       recordExamEncounter: (id, note) => run('recordExamEncounter', [id, note], 'Encounter recorded.'),
       recordDiagnosticException: (id, reason, note) => run('recordDiagnosticException', [id, reason, note], 'Diagnostic exception recorded.'),
       completeClinicalReview: (id, attestation) => run('completeClinicalReview', [id, attestation], 'Clinician review recorded and routed to QA.'),
+      returnClinicalToScheduling: (examOrDbqId, reason) => run('returnClinicalToScheduling', [examOrDbqId, reason], 'Examination returned to Stage 3 (Scheduling) for rework.'),
+      uploadDBQDocument,
+      uploadDiagnosticDocument,
+      validateAndDraftDBQ,
       requestCorrection: (id, comment) => run('requestCorrection', [id, comment], 'Correction task created for the linked DBQ.'),
       addQAFinding: (id, input) => run('addQAFinding', [id, input], 'QA finding added to this report review.'),
       resubmitCorrection: (id, values) => run('resubmitCorrection', [id, values], 'Correction draft saved. Record clinician sign-off to send it to QA.'),
       resolveQAFinding: (id, comment) => run('resolveQAFinding', [id, comment], 'QA finding disposition saved.'),
-      approveQAReview: (id, note) => run('approveQAReview', [id, note], 'QA approval recorded; result package readiness updated.'),
+      approveQAReview: (id, note, manualOverride) => run('approveQAReview', manualOverride ? [id, note, manualOverride] : [id, note], 'QA approval recorded; result package readiness updated.'),
       runQAChecklist: (id) => run('runQAChecklist', [id], 'Deterministic QA checks completed for the current report version.'),
+      runQAAudit,
       ensureResultsPackage: (esrId) => run('ensureResultsPackage', [esrId], 'Results package opened or created for review.'),
       validateResultsPackage: (id) => run('validateResultsPackage', [id], 'Package validation completed.'),
       prepareResultsPackage: (id) => run('prepareResultsPackage', [id], 'Package preparation recorded. External submission is not enabled.'),
@@ -209,9 +393,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       simulatePackageTransmission: (id) => run('simulatePackageTransmission', [id], 'Package opened for internal delivery review.'),
       recordSimulatedPackageResponse: (id, response, details, targetId) => run('recordSimulatedPackageResponse', [id, response, details, targetId], 'Internal review response and handoff recorded.'),
       recordSimulatedContentionCancellation: (esrId, contentionId, reason) => run('recordSimulatedContentionCancellation', [esrId, contentionId, reason], 'Contention cancellation recorded.'),
+      uploadContentionDocuments: (packageId, contentionIds, simulateFail = false) => run('uploadContentionDocuments', [packageId, contentionIds, simulateFail], simulateFail ? 'Simulated upload failure recorded for retry.' : 'Versioned documents uploaded to local simulated eFolder.'),
+      sendContentionRap: (packageId, contentionIds, simulateFail = false) => run('sendContentionRap', [packageId, contentionIds, simulateFail], simulateFail ? 'Simulated RAP transmission failure recorded; uploaded documents preserved for retry.' : 'Simulated contention RAP transmitted and confirmed.'),
+      createLinkedReworkESR: (input) => run('createLinkedReworkESR', [input], 'Linked VA Rework ESR created in VA Rework Inbox without overwriting original ESR.'),
+      assessReworkESR: (reworkEsrId, decision) => run('assessReworkESR', [reworkEsrId, decision], 'Rework ESR assessment and routing recorded.'),
+      updateReworkRootCause: (analyticsId, patch) => run('updateReworkRootCause', [analyticsId, patch], 'Rework root-cause analysis updated.'),
       closeESR: (id, note) => run('closeESR', [id, note], 'ESR closure recorded.'),
     };
-  }, [state, loading, storageError, runtime, importIntakeDocument, retryIntakeDocument, receiveIntakeExample, reviewIntakeDocuments, run]);
+  }, [state, loading, storageError, runtime, savingIntakeEsrs, busyTriageByContention, triageDraftEdits, setTriageDraftEdit, clearTriageDraftEdit, importIntakeDocument, retryIntakeDocument, receiveIntakeExample, reviewIntakeDocuments, prepareTriageDossier, uploadDBQDocument, uploadDiagnosticDocument, validateAndDraftDBQ, runQAAudit, validateIntake, getWorkItem, run, runTriageAction]);
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

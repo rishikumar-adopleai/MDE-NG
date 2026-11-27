@@ -1,7 +1,7 @@
-import type { AIStageReview, DocumentReviewDecision, IntakeWorkspaceView, StageKey, TriageWorkspaceView, WorkspaceState } from '../../domain/model';
-export type { AIStageReview } from '../../domain/model';
+import type { AIStageReview, ClinicalWorkspaceView, DocumentReviewDecision, EsrInspectionResult, IntakeWorkspaceView, SchedulingWorkspaceView, StageKey, TriageWorkspaceView, WorkspaceState } from '../../domain/model';
+export type { AIStageReview, EsrInspectionResult } from '../../domain/model';
 
-export type WorkspacePayload = WorkspaceState & { intake?: IntakeWorkspaceView; triage?: TriageWorkspaceView };
+export type WorkspacePayload = WorkspaceState & { intake?: IntakeWorkspaceView; triage?: TriageWorkspaceView; scheduling?: SchedulingWorkspaceView; clinical?: ClinicalWorkspaceView };
 
 export type WorkspaceRuntime = {
   mode: 'dev' | 'prod';
@@ -17,10 +17,30 @@ export class WorkspaceApiError extends Error {
 
 const apiBase = import.meta.env.BASE_URL ? import.meta.env.BASE_URL.replace(/\/$/, '') + '/api' : '/api';
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+async function request<T>(path: string, options?: RequestInit, timeoutMs?: number): Promise<T> {
   const headers = new Headers(options?.headers);
   headers.set('Accept', 'application/json');
-  const response = await fetch(`${apiBase}${path}`, { credentials: 'same-origin', ...options, headers });
+  const effectiveTimeout = timeoutMs ?? (options?.body instanceof FormData ? 120000 : 25000);
+  const controller = new AbortController();
+  const externalSignal = options?.signal;
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+  const timer = globalThis.setTimeout(() => controller.abort(), effectiveTimeout);
+  let response: Response;
+  try {
+    response = await fetch(`${apiBase}${path}`, { credentials: 'same-origin', ...options, headers, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError' && !externalSignal?.aborted) {
+      throw new WorkspaceApiError(408, 'The workspace request timed out. Please retry.');
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => undefined);
     throw new WorkspaceApiError(response.status, typeof body?.detail === 'string' ? body.detail : `Workspace request failed (${response.status}).`);
@@ -69,6 +89,9 @@ export const receiveIntakeSample = (scenario: string) =>
     method: 'POST',
   });
 
+export const inspectIntakeEsr = (body: FormData) =>
+  request<EsrInspectionResult>('/intake/esrs/inspect', { method: 'POST', body });
+
 export interface ExchangeEvent {
   id: string; title: string; scenario: string; claimant: string; at: string;
   appointmentAt: string; source: string; facts: Record<string, string>;
@@ -94,7 +117,7 @@ export function generateStageReview(stage: StageKey, entityId: string, signal?: 
     signal,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ stage, entityId }),
-  });
+  }, 120000);
 }
 
 export function requestIntakeDocumentReview(esrId: string, signal: AbortSignal, disposition?: {
@@ -105,5 +128,92 @@ export function requestIntakeDocumentReview(esrId: string, signal: AbortSignal, 
     signal, method: disposition ? 'PUT' : 'POST',
     headers: disposition && { 'Content-Type': 'application/json' },
     body: disposition && JSON.stringify(disposition),
+  }, 120000);
+}
+
+export function triggerTriagePrepare(esrId: string, force = false) {
+  return request<{ ok: boolean; esrId: string; state: WorkspacePayload }>(
+    `/triage/esrs/${encodeURIComponent(esrId)}/prepare?force=${force ? 'true' : 'false'}`,
+    { method: 'POST' },
+    120000,
+  );
+}
+
+export function matchSchedulingOptions(
+  requirementIds: string[],
+  facilityId?: string,
+  examinerId?: string,
+) {
+  return request<import('../../domain/model').SchedulingMatchResponse>('/scheduling/match', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requirementIds,
+      facilityId: facilityId || null,
+      examinerId: examinerId || null,
+    }),
   });
+}
+
+export function matchCoordinatedScheduling(
+  esrId: string,
+  requirementIds?: string[],
+) {
+  return request<import('../../domain/model').CoordinatedMatchResponse>('/scheduling/match-coordinated', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      esrId,
+      requirementIds: requirementIds && requirementIds.length ? requirementIds : null,
+    }),
+  });
+}
+
+export function uploadClinicalDBQ(dbqId: string, file: File) {
+  const formData = new FormData();
+  formData.append('file', file);
+  return request<{
+    ok: boolean;
+    dbqId: string;
+    extractedValues: import('../../domain/model').FieldValues;
+    validationAlerts: import('../../domain/model').ClinicalValidationAlert[];
+    draftMedicalReview?: import('../../domain/model').DraftMedicalReview;
+    state: WorkspacePayload;
+  }>(`/clinical/${encodeURIComponent(dbqId)}/upload-dbq`, {
+    method: 'POST',
+    body: formData,
+  });
+}
+
+export function uploadClinicalDiagnostic(orderId: string, file: File) {
+  const formData = new FormData();
+  formData.append('file', file);
+  return request<{ ok: boolean; orderId: string; state: WorkspacePayload }>(
+    `/clinical/${encodeURIComponent(orderId)}/upload-diagnostic`,
+    { method: 'POST', body: formData },
+  );
+}
+
+export function validateAndDraftClinical(dbqId: string, values?: import('../../domain/model').FieldValues) {
+  return request<{
+    ok: boolean;
+    dbqId: string;
+    validationAlerts: import('../../domain/model').ClinicalValidationAlert[];
+    draftMedicalReview?: import('../../domain/model').DraftMedicalReview;
+    state: WorkspacePayload;
+  }>(`/clinical/${encodeURIComponent(dbqId)}/validate-and-draft`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values: values ?? null }),
+  });
+}
+
+export function triggerQAAudit(reviewId: string, force = false) {
+  return request<{
+    ok: boolean;
+    reviewId: string;
+    state: WorkspacePayload;
+  }>(`/qa/reviews/${encodeURIComponent(reviewId)}/audit?force=${force ? 'true' : 'false'}`, {
+    method: 'POST',
+  }, 120000);
 }

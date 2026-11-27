@@ -37,6 +37,11 @@ const actions = {
   recordSimulatedContentionCancellation: workflow.recordSimulatedContentionCancellation,
   closeESR: workflow.closeESR,
   decideInsight: workflow.decideInsight,
+  uploadContentionDocuments: workflow.uploadContentionDocuments,
+  sendContentionRap: workflow.sendContentionRap,
+  createLinkedReworkESR: workflow.createLinkedReworkESR,
+  assessReworkESR: workflow.assessReworkESR,
+  updateReworkRootCause: workflow.updateReworkRootCause,
 };
 
 if (process.argv[2] === '--seed') {
@@ -81,8 +86,12 @@ function applyCommand({ action, args, state, actorId }) {
     const outcome = action === 'completeClinicalReview'
       ? workflow.completeClinicalReview(state, supplied[0], supplied[1], actorId)
       : action === 'approveQAReview'
-        ? workflow.approveQAReview(state, supplied[0], supplied[1], actorId)
-        : actions[action](state, ...supplied);
+        ? workflow.approveQAReview(state, supplied[0], supplied[1], actorId, supplied[2])
+        : action === 'createLinkedReworkESR'
+          ? workflow.createLinkedReworkESR(state, supplied[0], actorId)
+          : action === 'assessReworkESR'
+            ? workflow.assessReworkESR(state, supplied[0], supplied[1], actorId)
+            : actions[action](state, ...supplied);
     const { state: changed, ...value } = 'state' in outcome ? outcome : { state: outcome };
     const now = new Date().toISOString();
     for (const activity of Object.values(changed.activitiesById)) {
@@ -96,6 +105,14 @@ function applyCommand({ action, args, state, actorId }) {
     const next = refreshWorkItems({ ...changed, revision: state.revision + 1, updatedAt: now }, now);
     if (action === 'approveQAReview') {
       const review = next.qaReviewsById[supplied[0]];
+      // This command changes report and package work only. Earlier stage queues
+      // are maintained by FastAPI, including requirement rows for held slots.
+      const affected = work => work.esrId === review.esrId &&
+        ['Clinical Evaluation', 'Internal QA', 'VA Delivery & Review'].includes(work.stage);
+      next.workItemsById = {
+        ...Object.fromEntries(Object.entries(state.workItemsById).filter(([, work]) => !affected(work))),
+        ...Object.fromEntries(Object.entries(next.workItemsById).filter(([, work]) => affected(work))),
+      };
       const pack = Object.values(next.resultsPackagesById).find(item =>
         item.esrId === review.esrId && item.preparationStatus !== 'closed' && item.validationStatus !== 'blocked');
       value.packageReady = Boolean(pack);

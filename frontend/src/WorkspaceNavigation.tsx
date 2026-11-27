@@ -1,26 +1,30 @@
 import { useEffect, useId, useRef, useState, type MouseEvent, type ReactNode } from 'react';
-import { AlertCircle, Hospital, LogOut, Menu, ShieldCheck, UserRound, X } from 'lucide-react';
+import { AlertCircle, Hospital, LayoutDashboard, LogOut, Menu, ShieldCheck, UserRound, X } from 'lucide-react';
 import { logout } from './data/repositories/workspaceApi';
 import { navItems, type StageKey } from './stages/model';
-import { stageHref } from './workspaceRoutes';
+import { workspaceHref, type WorkspacePage } from './workspaceRoutes';
 
 const mobileViewport = '(max-width: 900px)';
 
 type NavigationProps = {
-  stage: StageKey;
-  onNavigate: (stage: StageKey) => void;
+  page: WorkspacePage;
+  onNavigate: (page: WorkspacePage) => void;
 };
 
-function StageLinks({ stage, onNavigate }: NavigationProps) {
-  function follow(event: MouseEvent<HTMLAnchorElement>, target: StageKey) {
+function StageLinks({ page, onNavigate }: NavigationProps) {
+  function follow(event: MouseEvent<HTMLAnchorElement>, target: WorkspacePage) {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     onNavigate(target);
   }
 
-  return <nav className="workflow-nav" aria-label="Examination workflow">
+  return <nav className="workflow-nav" aria-label="Examination workspace">
+    <a href={workspaceHref('Dashboard')} aria-current={page === 'Dashboard' ? 'page' : undefined}
+      aria-label="Dashboard" onClick={event => follow(event, 'Dashboard')}>
+      <LayoutDashboard size={19} aria-hidden="true" /><span>Dashboard</span>
+    </a>
     {navItems.map(({ name, icon: Icon }) => <a key={name}
-      href={stageHref(name, window.location.search)} aria-current={stage === name ? 'page' : undefined}
+      href={workspaceHref(name)} aria-current={page === name ? 'page' : undefined}
       aria-label={name} onClick={event => follow(event, name)}>
       <Icon size={19} aria-hidden="true" />
       <span>{name}</span>
@@ -32,7 +36,7 @@ function WorkspaceBrand() {
   return <div className="workflow-brand"><span className="workflow-brand-mark"><Hospital size={21} aria-hidden="true" /></span><strong>MDE-NG</strong></div>;
 }
 
-export function WorkspaceNavigation({ stage, onNavigate, open, onClose }: NavigationProps & { open: boolean; onClose: () => void }) {
+export function WorkspaceNavigation({ page, onNavigate, open, onClose }: NavigationProps & { open: boolean; onClose: () => void }) {
   const drawer = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dialog = drawer.current;
@@ -51,7 +55,7 @@ export function WorkspaceNavigation({ stage, onNavigate, open, onClose }: Naviga
   return <>
     <aside className="workflow-sidebar" aria-label="MDE-NG">
       <WorkspaceBrand />
-      <StageLinks stage={stage} onNavigate={onNavigate} />
+      <StageLinks page={page} onNavigate={onNavigate} />
       <span className="workflow-rail-footer" aria-hidden="true"><ShieldCheck size={18} /></span>
     </aside>
     <dialog ref={drawer} className="workflow-drawer" id="workflow-drawer" aria-label="Workflow navigation"
@@ -61,7 +65,7 @@ export function WorkspaceNavigation({ stage, onNavigate, open, onClose }: Naviga
           <WorkspaceBrand />
           <button type="button" className="workflow-icon-button" aria-label="Close navigation" onClick={onClose} autoFocus><X size={20} /></button>
         </div>
-        <StageLinks stage={stage} onNavigate={onNavigate} />
+        <StageLinks page={page} onNavigate={onNavigate} />
       </div>
     </dialog>
   </>;
@@ -119,20 +123,20 @@ function WorkspaceAccount() {
   </div>;
 }
 
-export function WorkspaceTopbar({ openNavigation, navigationOpen, canSignOut, exceptions, exceptionsSelected, onExceptions, children }: {
+export function WorkspaceTopbar({ openNavigation, navigationOpen, canSignOut, exceptions, exceptionsSelected, onExceptions, showExceptions = true, children }: {
   openNavigation: () => void; navigationOpen: boolean; canSignOut: boolean; exceptions: number;
-  exceptionsSelected: boolean; onExceptions: () => void; children?: ReactNode;
+  exceptionsSelected: boolean; onExceptions: () => void; showExceptions?: boolean; children?: ReactNode;
 }) {
   return <header className="workflow-topbar">
     <button type="button" className="workflow-icon-button workflow-mobile-menu" aria-label="Open navigation"
       aria-haspopup="dialog" aria-controls="workflow-drawer" aria-expanded={navigationOpen} onClick={openNavigation}><Menu size={20} /></button>
-    <span className="workflow-topbar-title">EXAMINATON WORKSPACE</span>
+    <span className="workflow-topbar-title">MDE-NG</span>
     {children}
     <div className="workflow-tools">
-      <button type="button" className="workflow-exceptions" aria-label={`Exceptions (${exceptions})`}
+      {showExceptions && <button type="button" className="workflow-exceptions" aria-label={`Exceptions (${exceptions})`}
         title="Filter the current queue by exceptions" aria-pressed={exceptionsSelected} onClick={onExceptions}>
         <AlertCircle size={17} aria-hidden="true" /><span>Exceptions</span><b>{exceptions}</b>
-      </button>
+      </button>}
       {canSignOut && <WorkspaceAccount />}
     </div>
   </header>;

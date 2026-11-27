@@ -88,7 +88,8 @@ export function refreshWorkItems(state: WorkspaceState, now = new Date().toISOSt
       return finding?.severity === 'blocking' && ['open', 'correction-requested'].includes(finding.status);
     });
     if (hasActiveContention(state.dbqsById[review.dbqId]?.contentionIds ?? []) && !state.esrsById[review.esrId]?.workflowClosedAt && ['queued', 'in-review', 'returned'].includes(review.status)) {
-      openWorkItem(state, makeBase(review.esrId, review.id, 'qa-review', 'Internal QA', state.dbqsById[review.dbqId]?.formType ?? 'QA review', state.esrsById[review.esrId]?.priority ?? 'routine', openBlocking ? ['Blocking finding needs disposition'] : [], review.status === 'in-review' ? 'in-progress' : 'queued'), now, next);
+      const qaPriority = review.isVaReportFix ? 'urgent' : (state.esrsById[review.esrId]?.priority ?? 'routine');
+      openWorkItem(state, makeBase(review.esrId, review.id, 'qa-review', 'Internal QA', state.dbqsById[review.dbqId]?.formType ?? 'QA review', qaPriority, openBlocking ? ['Blocking finding needs disposition'] : [], review.status === 'in-review' ? 'in-progress' : 'queued'), now, next);
     }
   });
 
@@ -97,9 +98,37 @@ export function refreshWorkItems(state: WorkspaceState, now = new Date().toISOSt
     const isPendingClosure = item.simulatedResponse === 'accepted' && !esr?.workflowClosedAt;
     if (item.preparationStatus !== 'closed' && !esr?.workflowClosedAt) {
       const blocked = item.validationStatus === 'blocked' || item.blockingReasons.length > 0;
-      const title = item.simulatedResponse === 'awaiting-response' ? 'Record simulated package response' : isPendingClosure ? 'Complete ESR reconciliation' : 'Review results package';
+      const title = esr?.esrType === 'rework'
+        ? `Rework Delivery (${esr.reworkDetails?.reworkCategory ?? 'rework'})`
+        : item.simulatedResponse === 'awaiting-response'
+          ? 'Record simulated package response'
+          : isPendingClosure
+            ? 'Complete ESR reconciliation'
+            : 'Review results package';
       openWorkItem(state, makeBase(item.esrId, item.id, 'results-package', 'VA Delivery & Review', title, esr?.priority ?? 'routine', item.blockingReasons, blocked ? 'blocked' : 'queued'), now, next);
     }
+  });
+
+  // Ensure incoming VA Rework ESRs awaiting assessment / clarification / deferred exam surface in VA Delivery & Review even before a package exists
+  Object.values(state.esrsById).forEach((esr) => {
+    if (esr.esrType !== 'rework' || esr.workflowClosedAt) return;
+    const hasOpenPkg = Object.values(state.resultsPackagesById).some((p) => p.esrId === esr.id && p.preparationStatus !== 'closed');
+    if (hasOpenPkg) return;
+    const rd = esr.reworkDetails;
+    const label = rd?.assessmentStatus === 'pending-assessment'
+      ? `Assess VA Rework ESR (${rd.reworkCategory})`
+      : rd?.reworkRoute === 'pending-clarification'
+        ? 'Rework Pending VA Clarification'
+        : rd?.reworkRoute === 'additional-exam-deferred'
+          ? 'Rework Additional Exam (Deferred)'
+          : 'Rework in Progress';
+    const isBlocked = rd?.reworkRoute === 'pending-clarification' || rd?.reworkRoute === 'additional-exam-deferred';
+    const blocking = rd?.reworkRoute === 'pending-clarification'
+      ? ['Awaiting VA clarification before routing']
+      : rd?.reworkRoute === 'additional-exam-deferred'
+        ? ['Additional examination flagged as deferred in demo']
+        : [];
+    openWorkItem(state, makeBase(esr.id, esr.id, 'esr', 'VA Delivery & Review', label, esr.priority, blocking, isBlocked ? 'blocked' : 'queued'), now, next);
   });
 
   return { ...state, workItemsById: next };
@@ -132,7 +161,7 @@ export function getESRQueueStatus(state: WorkspaceState, esrId: string): string 
   const esr = state.esrsById[esrId];
   if (!esr) return 'Unavailable';
   const hasIntakeIssues = Object.values(state.intakeExceptionsById).some((item) => item.esrId === esrId && item.status === 'open');
-  if (esr.workflowClosedAt) return esr.workflowDisposition === 'cancelled' ? 'Cancelled in local simulation' : 'Completed in local simulation';
+  if (esr.workflowClosedAt) return esr.workflowDisposition === 'cancelled' ? 'Cancelled in this workspace' : 'Completed in this workspace';
   if (hasIntakeIssues) return 'Intake exception';
   const dbqs = getDBQsByESR(state, esrId);
   const openFindings = Object.values(state.qaFindingsById).some((item) => item.esrId === esrId && item.severity === 'blocking' && ['open', 'correction-requested'].includes(item.status));

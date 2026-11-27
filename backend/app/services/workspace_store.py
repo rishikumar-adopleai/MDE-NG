@@ -49,8 +49,12 @@ def run_engine(payload: dict | None = None, *, bootstrap: bool = False) -> dict:
     try:
         result = subprocess.run(
             command, input=json.dumps(payload), capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             timeout=30, check=True, env=clean_env,
         )
+        if not result.stdout:
+            logger.error("Workspace engine returned empty stdout. Stderr: %s", result.stderr)
+            raise HTTPException(503, "The local workflow engine returned an empty response.")
         return json.loads(result.stdout)
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr or ""
@@ -74,7 +78,7 @@ def get_snapshot(db: Session) -> WorkspaceSnapshot | None:
 
 
 def source_workspace(state: dict) -> dict:
-    from app.services.intake_examples import is_legacy_example
+    from app.services.intake_common import is_legacy_example
 
     esrs = {
         key: esr for key, esr in state["esrsById"].items()
@@ -102,47 +106,13 @@ def get_state(db: Session, *, backfill_requests: bool = False, load_practice: bo
     snapshot = get_snapshot(db)
     if snapshot:
         state = snapshot.state or empty_workspace()
-        if backfill_requests and settings.app_env == "dev":
-            from app.services.va_samples import add_bundled_requests, pending_scenarios
-            from app.services.va_practice import PRACTICE_COHORT, add_practice_workflow
-
-            needs_migration = state.get("workspaceDataSource") != SAMPLE_SOURCE_MODE
-            next_state = source_workspace(state) if needs_migration else state
-            scenarios = pending_scenarios(next_state)
-            needs_practice = load_practice and next_state.get("practiceCohort") != PRACTICE_COHORT
-            if scenarios or needs_migration or needs_practice:
-                revision = snapshot.revision
-                next_state = deepcopy(next_state)
-                add_bundled_requests(db, next_state, scenarios)
-                if needs_practice:
-                    next_state = add_practice_workflow(next_state)
-                if next_state == state:
-                    return state
-                next_state.update(revision=revision + 1, updatedAt=datetime.now(UTC).isoformat())
-                try:
-                    save_next_state(db, revision, next_state)
-                    if needs_migration and db.get(WorkspaceSnapshot, LEGACY_SNAPSHOT_ID) is None:
-                        db.add(WorkspaceSnapshot(id=LEGACY_SNAPSHOT_ID, revision=revision, state=state))
-                    db.commit()
-                except HTTPException as exc:
-                    if exc.status_code != 409:
-                        raise
-                    return get_state(db)
-                return next_state
+        state["revision"] = snapshot.revision
         return state
     if settings.app_env == "prod":
         return empty_workspace()
 
-    from app.services.va_samples import add_bundled_requests, pending_scenarios
-
     fixture = empty_workspace()
     fixture["workspaceDataSource"] = SAMPLE_SOURCE_MODE
-    add_bundled_requests(db, fixture, pending_scenarios(fixture))
-    if load_practice:
-        from app.services.va_practice import add_practice_workflow
-
-        fixture = add_practice_workflow(fixture)
-        fixture["revision"] = 0
     db.add(WorkspaceSnapshot(id=WORKSPACE_ID, revision=0, state=fixture))
     try:
         db.commit()
@@ -151,11 +121,14 @@ def get_state(db: Session, *, backfill_requests: bool = False, load_practice: bo
         winner = get_snapshot(db)
         if winner is None:
             raise
-        return winner.state
+        winner_state = winner.state or empty_workspace()
+        winner_state["revision"] = winner.revision
+        return winner_state
     return fixture
 
 
 def save_next_state(db: Session, revision: int, next_state: dict) -> None:
+    next_state["revision"] = revision + 1
     saved = db.execute(
         update(WorkspaceSnapshot)
         .where(WorkspaceSnapshot.id == WORKSPACE_ID, WorkspaceSnapshot.revision == revision)
